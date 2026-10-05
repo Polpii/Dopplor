@@ -32,8 +32,13 @@ for _ in $(seq 1 120); do
 done
 curl -sf "http://127.0.0.1:$PORT/api/info" >/dev/null || { echo "Le serveur ne répond pas, voir $LOGS/server.log"; exit 1; }
 
+# GNOME refuse le plein écran si la vue « Activités » est ouverte au moment du lancement.
+command -v xdotool >/dev/null && xdotool key Escape 2>/dev/null || true
+SCREEN=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}' | tr x ,)
+
 setsid nohup chromium \
   --kiosk "http://127.0.0.1:$PORT/" \
+  --start-fullscreen --window-position=0,0 --window-size="${SCREEN:-1920,1080}" \
   --user-data-dir="$PROFILE" \
   --no-first-run --noerrdialogs --disable-infobars --disable-session-crashed-bubble \
   --disable-features=Translate --ignore-gpu-blocklist --enable-gpu-rasterization \

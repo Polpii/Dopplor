@@ -211,7 +211,7 @@ def main() -> None:
         app.router.add_static("/", web_dir)
     app.on_startup.append(on_startup)
     log.info("Dopplor sur http://%s:%d (GPU : %s)", args.host, args.port, gpu)
-    web.run_app(app, host=args.host, port=args.port, print=None)
+    web.run_app(app, host=args.host, port=args.port, print=None, access_log=None)
 
 
 if __name__ == "__main__":
