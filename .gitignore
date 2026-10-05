@@ -10,3 +10,6 @@ __pycache__
 
 # Calibration du miroir (propre à chaque installation)
 calibration.json
+
+# Journaux du SDK Orbbec
+Log/
