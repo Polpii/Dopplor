@@ -18,6 +18,15 @@ pkill -f "server/server.py" 2>/dev/null || true
 pkill -f "$PROFILE" 2>/dev/null || true
 # Attendre que l'ancien serveur ait rendu la caméra avant d'en démarrer un nouveau.
 for _ in $(seq 1 50); do pgrep -f "server/server.py" >/dev/null || break; sleep 0.1; done
+
+# Le SDK Orbbec détache la caméra du pilote vidéo Linux et ne la rend pas toujours : sans
+# /dev/video0, on réinitialise la caméra en USB (comme la débrancher / rebrancher).
+ORBBEC=$(lsusb | awk '/2bc5:/ {gsub(":", "", $4); printf "/dev/bus/usb/%s/%s", $2, $4; exit}')
+if [ ! -e /dev/video0 ] && [ -n "$ORBBEC" ]; then
+  echo "Caméra sans pilote vidéo : réinitialisation USB…"
+  python3 -c "import fcntl, os, sys; fcntl.ioctl(os.open(sys.argv[1], os.O_WRONLY), 0x5514, 0)" "$ORBBEC" || true
+  for _ in $(seq 1 50); do [ -e /dev/video0 ] && break; sleep 0.1; done
+fi
 [ "${1:-}" = "stop" ] && { echo "Dopplor arrêté."; exit 0; }
 
 # Session graphique de l'utilisateur connecté à l'écran (utile quand on lance via SSH).
