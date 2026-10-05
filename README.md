@@ -34,6 +34,20 @@ A few things that took some trial and error:
 
 **Rendering** is plain WebGL2, no engine. Every bone is an instanced quad shaded with a distance field. Everything is drawn into an HDR buffer, then bloomed with a mip chain and tone mapped. The background is clamped to true black, because on a one-way mirror even a faint grey haze shows up.
 
+## Lining up with the reflection
+
+A camera image and a reflection don't line up: your reflection sits behind the glass, as far back as you are in front, and where you see it depends on where your eyes are. So the overlay has to be drawn where the line from your eye to your reflection crosses the glass. That needs three things in 3D:
+
+- **your body**: the Femto Bolt's depth camera gives the distance, MediaPipe's relative depth gives the relief between the joints (more robust than reading depth point by point when an arm passes in front of the body);
+- **your eyes**: from the iris landmarks;
+- **where the camera is relative to the screen**: its tilt comes from its accelerometer, its position from three tape measurements entered once in the calibration panel (`K`).
+
+The first idea was to calibrate by touching the mirror at targets, but a camera mounted on the mirror can't see a finger on the glass. The next step, once the glass is in, is a calibration by sight: close one eye, put the reflection of the other on a few targets, and solve for the camera position from where the eye was each time.
+
+The reflection maths are checked in `server/test_mirror.py` (a point on the glass is drawn where it is, your own eye is seen straight ahead, a point as far as your eye is seen halfway...).
+
+One limit is physical and applies to every augmented mirror: the drawing is on the glass while your reflection is twice as far, so both eyes can't focus on both at once. The alignment is exact for a point between the eyes.
+
 ## Running it
 
 There are two ways to run it. In both cases the page and the neon rendering are the same, only the tracking moves.
@@ -74,6 +88,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
 | `↑` `↓` | more / less prediction (latency compensation) |
+| `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
 | `H` | hide the debug panel |
 
@@ -88,8 +103,11 @@ server/
   server.py          web server + WebSocket, serves the built page
   capture.py         camera thread (latest frame only)
   vision.py          MediaPipe pipeline, hand/face crops from the skeleton
+  orbbec.py          Femto Bolt through the Orbbec SDK: color, depth, accelerometer
+  mirror.py          3D landmarks and where the eye sees their reflection
 src/
   main.ts            picks the source (Python server or browser), render loop, debug panel
+  calibration.ts     calibration panel
   scene.ts           tracking, smoothing, expressions
   vision/
     remote.ts        landmarks from the Python server
@@ -109,7 +127,7 @@ scripts/
 
 ## Not done yet
 
-- Calibration to the actual reflection. Right now the overlay is aligned with the camera image, not with what your eyes see in the mirror (that needs eye tracking and the mirror geometry).
+- The calibration by sight, once the mirror glass is in. For now the camera position is measured by hand.
 - One person at a time.
 - Very fast hand moves still drop out on a 30 fps webcam. A 60 fps camera helps a lot.
 
