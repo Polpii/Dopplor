@@ -55,7 +55,6 @@ const FACE_IRIS_EYES: [number, number, number, number, number][] = [
 ];
 const FACE_MOUTH_TOP = 13;
 const FACE_MOUTH_BOTTOM = 14;
-const FACE_CHIN = 152;
 const FACE_LEFT_CHEEK = 234;
 const FACE_RIGHT_CHEEK = 454;
 
@@ -106,35 +105,19 @@ export class FigureBuilder {
     const bone = (a: number, b: number, color: RGB, width: number, intensity: number) =>
       out.line(p[a * 2], p[a * 2 + 1], p[b * 2], p[b * 2 + 1], width, color, intensity);
 
-    // Cou + tête : relié au menton du visage s'il est suivi, sinon un cercle de tête.
-    const neckX = (p[22] + p[24]) / 2;
-    const neckY = (p[23] + p[25]) / 2;
-    const neckVis = Math.min(vis(11), vis(12));
+    // Tête : un cercle quand le visage n'est pas suivi (sinon le maillage du visage la dessine).
+    // Pas de cou : la tête flotte au-dessus des épaules.
     let face: Track | undefined;
     for (const f of scene.faces) if (f.owner === body.key && Scene.alpha(f, now) > 0) face = f;
-    if (face) {
-      const { sx, tx, sy, ty } = this.view;
-      const a = Math.min(neckVis, Scene.alpha(face, now));
-      const cx = tx + sx * face.points[FACE_CHIN * STRIDE];
-      const cy = ty + sy * face.points[FACE_CHIN * STRIDE + 1];
-      if (a > 0) out.line(neckX, neckY, cx, cy, base * 0.8, pal.center, a);
-    } else {
-      const headVis = Math.min(vis(7), vis(8));
-      if (headVis > 0) {
-        const hx = (p[14] + p[16]) / 2;
-        const hy = (p[15] + p[17]) / 2;
-        const r = dist(p, 7, 8) * 0.75;
-        for (let k = 0; k < HEAD_RING_SEGMENTS; k++) {
-          const t0 = (k / HEAD_RING_SEGMENTS) * Math.PI * 2;
-          const t1 = ((k + 1) / HEAD_RING_SEGMENTS) * Math.PI * 2;
-          out.line(hx + Math.cos(t0) * r, hy + Math.sin(t0) * r, hx + Math.cos(t1) * r, hy + Math.sin(t1) * r, base * 0.8, pal.center, headVis);
-        }
-        const len = Math.hypot(neckX - hx, neckY - hy);
-        const a = Math.min(headVis, neckVis);
-        if (len > r && a > 0) {
-          const k = r / len;
-          out.line(hx + (neckX - hx) * k, hy + (neckY - hy) * k, neckX, neckY, base * 0.8, pal.center, a);
-        }
+    const headVis = Math.min(vis(7), vis(8));
+    if (!face && headVis > 0) {
+      const hx = (p[14] + p[16]) / 2;
+      const hy = (p[15] + p[17]) / 2;
+      const r = dist(p, 7, 8) * 0.75;
+      for (let k = 0; k < HEAD_RING_SEGMENTS; k++) {
+        const t0 = (k / HEAD_RING_SEGMENTS) * Math.PI * 2;
+        const t1 = ((k + 1) / HEAD_RING_SEGMENTS) * Math.PI * 2;
+        out.line(hx + Math.cos(t0) * r, hy + Math.sin(t0) * r, hx + Math.cos(t1) * r, hy + Math.sin(t1) * r, base * 0.8, pal.center, headVis);
       }
     }
 
