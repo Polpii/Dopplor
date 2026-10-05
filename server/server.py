@@ -14,12 +14,14 @@ import logging
 import struct
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import cv2
 from aiohttp import WSMsgType, web
 
 from capture import Camera, Source, VideoFile
+from mirror import Mirror
 from vision import KINDS, Pipeline, Result, gpu_name
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -51,8 +53,11 @@ def result_message(r: Result) -> bytes:
         "wall": r.frame.wall_ms,  # horloge murale : latence capture → écran
         "infer": round(r.infer_ms, 2),
         "zoom": r.zoomed,
+        "space": r.space,
         "dets": dets,
     }
+    if r.eye is not None:
+        header["eye"] = [round(v, 4) for v in r.eye]
     return encode(header, *(d.points.tobytes() for d in r.detections))
 
 
@@ -102,6 +107,7 @@ def preview_loop(source: Source, hub: Hub, width: int = 640, fps: float = 15) ->
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serveur de vision Dopplor")
     parser.add_argument("--camera", default="0", help="index ou chemin de la caméra (défaut 0)")
+    parser.add_argument("--camera-backend", default="auto", choices=["auto", "orbbec", "v4l2"], help="orbbec : couleur + profondeur via le SDK")
     parser.add_argument("--video", help="fichier vidéo à rejouer au lieu de la caméra")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
@@ -121,12 +127,22 @@ def main() -> None:
     if args.video:
         source: Source = VideoFile(args.video, args.rotate)
     else:
-        device = int(args.camera) if args.camera.isdigit() else args.camera
-        source = Camera(device, args.width, args.height, args.fps, args.format, args.exposure, args.rotate)
+        source = open_camera(args)
     source.start()
 
     hub = Hub()
     pipeline = Pipeline(source, Path(args.models), args.pose_model, not args.cpu, lambda r: hub.broadcast(result_message(r)))
+    mirror = Mirror(source, ROOT / "calibration.json")
+    pipeline.mirror = mirror
+
+    def mirror_state() -> dict:
+        tilt = mirror.tilt()
+        return {
+            "available": mirror.available,
+            "active": mirror.active,
+            "calibration": asdict(mirror.calibration),
+            "tilt": [round(tilt[0], 1), round(tilt[1], 1)] if tilt else None,
+        }
     # On n'affiche la carte graphique que si au moins un modèle tourne vraiment dessus.
     gpu = gpu_name() if "GPU" in pipeline.delegates().values() else "CPU"
 
@@ -141,6 +157,7 @@ def main() -> None:
                 "delegates": pipeline.delegates(),
                 "poseModel": pipeline.pose_model,
                 "enabled": pipeline.enabled,
+                "mirror": mirror_state(),
             }
         )
 
@@ -151,6 +168,7 @@ def main() -> None:
                 "cameraFps": round(source.fps, 1),
                 "poseModel": pipeline.pose_model,
                 "delegates": pipeline.delegates(),
+                "mirror": mirror_state(),
                 "tasks": {
                     k: {"fps": round(s.fps, 1), "infer": round(s.infer_ms, 2), "zoom": pipeline.zoomed[k], "enabled": pipeline.enabled[k]}
                     for k, s in pipeline.stats.items()
@@ -173,6 +191,9 @@ def main() -> None:
                     pipeline.enabled[cmd["kind"]] = bool(cmd.get("on"))
                 elif cmd.get("cmd") == "model":
                     pipeline.set_pose_model(cmd.get("model", ""))
+                elif cmd.get("cmd") == "calibration" and isinstance(cmd.get("data"), dict):
+                    mirror.set_calibration(cmd["data"])
+                    hub.broadcast(stats())
                 elif cmd.get("cmd") == "preview":
                     (hub.preview_clients.add if cmd.get("on") else hub.preview_clients.discard)(ws)
         finally:
@@ -212,6 +233,24 @@ def main() -> None:
     app.on_startup.append(on_startup)
     log.info("Dopplor sur http://%s:%d (GPU : %s)", args.host, args.port, gpu)
     web.run_app(app, host=args.host, port=args.port, print=None, access_log=None)
+
+
+def open_camera(args: argparse.Namespace) -> Source:
+    """Caméra Orbbec (couleur + profondeur) si elle est là et que le SDK est installé, sinon V4L2."""
+    if args.camera_backend in ("auto", "orbbec"):
+        try:
+            import orbbec
+
+            if orbbec.available():
+                return orbbec.OrbbecCamera(args.width, args.height, args.fps, args.rotate)
+            if args.camera_backend == "orbbec":
+                raise RuntimeError("aucune caméra Orbbec détectée")
+        except ImportError:
+            if args.camera_backend == "orbbec":
+                raise
+            log.info("SDK Orbbec absent : caméra lue en V4L2, sans profondeur")
+    device = int(args.camera) if args.camera.isdigit() else args.camera
+    return Camera(device, args.width, args.height, args.fps, args.format, args.exposure, args.rotate)
 
 
 if __name__ == "__main__":

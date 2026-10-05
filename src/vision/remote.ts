@@ -1,7 +1,8 @@
 // Source « python » : le serveur (server/server.py) lit la caméra et fait tourner MediaPipe en
 // natif sur le GPU ; on reçoit seulement les points, en binaire, par WebSocket.
+import type { CalibrationData, MirrorInfo } from "../calibration";
 import type { Detection, PoseModel, TaskKind } from "./protocol";
-import type { VisionSource } from "./source";
+import type { Space, VisionSource } from "./source";
 
 const POSE_MODELS: PoseModel[] = ["lite", "full", "heavy"];
 
@@ -14,6 +15,7 @@ interface Hello {
   delegates: Record<TaskKind, string>;
   poseModel: PoseModel;
   enabled: Record<TaskKind, boolean>;
+  mirror?: MirrorInfo;
 }
 
 interface Stats {
@@ -21,6 +23,7 @@ interface Stats {
   cameraFps: number;
   poseModel: PoseModel;
   delegates: Record<TaskKind, string>;
+  mirror?: MirrorInfo;
   tasks: Record<TaskKind, { fps: number; infer: number; zoom: boolean; enabled: boolean }>;
 }
 
@@ -31,6 +34,8 @@ interface ResultHeader {
   wall: number;
   infer: number;
   zoom: boolean;
+  space?: Space;
+  eye?: [number, number];
   dets: { n: number; key?: string; label?: string; expr?: number[] }[];
 }
 
@@ -49,6 +54,9 @@ export class RemoteSource implements VisionSource {
   private lastWall = 0;
   private wantPreview = false;
   private previewUrl = "";
+  private mirrorInfo: MirrorInfo | null = null;
+  private resultSpace: Space = "camera";
+  private eyeOnGlass: [number, number] | null = null;
 
   private constructor(
     private url: string,
@@ -71,6 +79,7 @@ export class RemoteSource implements VisionSource {
           const msg = JSON.parse(e.data) as Hello | Stats;
           if (msg.type === "hello") {
             this.hello = msg;
+            this.mirrorInfo = msg.mirror ?? null;
             this.enabled = { ...msg.enabled };
             this.poseModel = msg.poseModel;
             // Reconnexion : on réapplique ce que l'utilisateur avait choisi.
@@ -83,6 +92,7 @@ export class RemoteSource implements VisionSource {
           } else if (msg.type === "stats") {
             this.stats = msg;
             this.poseModel = msg.poseModel;
+            this.mirrorInfo = msg.mirror ?? this.mirrorInfo;
           }
         } else {
           this.handleBinary(e.data as ArrayBuffer);
@@ -119,7 +129,11 @@ export class RemoteSource implements VisionSource {
       offset += d.n * 16;
       return { points, key: d.key, label: d.label, expressions: d.expr ? Float32Array.from(d.expr) : undefined };
     });
-    if (header.kind === "pose") this.lastWall = header.wall;
+    if (header.kind === "pose") {
+      this.lastWall = header.wall;
+      this.resultSpace = header.space ?? "camera";
+      this.eyeOnGlass = header.eye ?? null;
+    }
     // Daté à l'heure murale de capture : même horloge que Date.now() côté page (mesures de retard).
     if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.wall);
   }
@@ -167,6 +181,22 @@ export class RemoteSource implements VisionSource {
 
   latency(): number | null {
     return this.lastWall ? Date.now() - this.lastWall : null;
+  }
+
+  space(): Space {
+    return this.resultSpace;
+  }
+
+  mirror(): MirrorInfo | null {
+    return this.mirrorInfo;
+  }
+
+  eye(): [number, number] | null {
+    return this.eyeOnGlass;
+  }
+
+  setCalibration(data: Partial<CalibrationData>): void {
+    this.send({ cmd: "calibration", data });
   }
 }
 

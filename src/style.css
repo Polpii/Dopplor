@@ -122,3 +122,87 @@ kbd {
   text-align: center;
   color: var(--fg);
 }
+
+/* Panneau de calibration (touche K) */
+body.calibrating {
+  cursor: default;
+}
+#calib {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 340px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+#calib.hidden,
+#calib-overlay.hidden {
+  display: none;
+}
+#calib h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--accent);
+}
+#calib .help,
+#calib small {
+  color: var(--muted);
+}
+#calib small {
+  display: block;
+  font-size: 11px;
+  line-height: 1.3;
+}
+#calib .field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0;
+}
+#calib input[type="number"] {
+  width: 80px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--fg);
+  font: inherit;
+  text-align: right;
+}
+#calib .toggle {
+  display: block;
+  margin: 8px 0;
+  font-weight: 600;
+}
+#calib .status {
+  color: var(--accent);
+}
+#calib-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+#calib-overlay line {
+  stroke: #ffd36b;
+  stroke-width: 2;
+}
+#calib-overlay text {
+  fill: #ffd36b;
+  font: 14px ui-sans-serif, system-ui, sans-serif;
+}
+#calib-overlay .eye {
+  fill: none;
+  stroke: #ff7ab6;
+  stroke-width: 2;
+}
+#calib-overlay text.eye {
+  fill: #ff7ab6;
+  stroke: none;
+}

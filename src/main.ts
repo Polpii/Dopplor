@@ -1,3 +1,4 @@
+import { CalibrationPanel } from "./calibration";
 import { NeonRenderer } from "./render/neon-renderer";
 import { Scene } from "./scene";
 import { EXPRESSIONS, type Expression, type TaskKind } from "./vision/protocol";
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
   source.onResult = (kind, detections, timestamp) => scene.update(kind, detections, timestamp);
   source.onError = (message) => setStatus(message, message !== "");
   setStatus("");
+  const calibration = new CalibrationPanel((data) => source.setCalibration?.(data));
 
   // Rendu : découplé de l'inférence. Avec la prédiction, les points avancent à chaque
   // rafraîchissement de l'écran tant que quelqu'un est suivi ; sinon on ne redessine que quand
@@ -90,7 +92,7 @@ async function main(): Promise<void> {
     if (predicting || fading || scene.version !== drawnVersion) {
       const [w, h] = source.frameSize();
       scene.extrapolate(now, lead);
-      renderer.render(scene, now, w, h);
+      renderer.render(scene, now, w, h, source.space?.() ?? "camera");
       drawnVersion = scene.version;
       draws++;
       // Latence capture → image dessinée (hors affichage de l'écran lui-même).
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
       ? [...new Set(EXPRESSIONS.filter((e) => Scene.expression(face, e) > 0.5).map((e) => EXPRESSION_NAMES[e]))]
       : [];
     hudExpression.textContent = !face?.expressions ? "–" : shown.length ? shown.join(" · ") : "neutre";
+    calibration.update(source.mirror?.() ?? null, source.eye?.() ?? null);
   };
   updateHud();
   setInterval(updateHud, 500);
@@ -130,6 +133,11 @@ async function main(): Promise<void> {
 
   window.addEventListener("keydown", async (e) => {
     if (e.repeat && !e.key.startsWith("Arrow")) return;
+    // Pendant la saisie d'une valeur de calibration, les touches servent au champ.
+    if (e.target instanceof HTMLInputElement) {
+      if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+      return;
+    }
     switch (e.key.toLowerCase()) {
       case "c":
         document.body.classList.toggle("black");
@@ -154,6 +162,10 @@ async function main(): Promise<void> {
         break;
       case "h":
         hud.classList.toggle("hidden");
+        break;
+      case "k":
+        calibration.toggle();
+        document.body.classList.toggle("calibrating", calibration.open);
         break;
       case "arrowup":
       case "arrowdown":

@@ -1,4 +1,8 @@
+import type { CalibrationData, MirrorInfo } from "../calibration";
 import type { Detection, TaskKind } from "./protocol";
+
+/** "camera" : points dans l'image caméra ; "screen" : déjà calés sur le reflet (écran 0–1). */
+export type Space = "camera" | "screen";
 
 /**
  * D'où viennent les points : du navigateur (webcam + MediaPipe en Web Workers) ou du serveur
@@ -23,4 +27,11 @@ export interface VisionSource {
   setCameraView(on: boolean): void;
   /** Temps écoulé depuis la capture de l'image du dernier squelette reçu (ms). */
   latency(): number | null;
+  /** Repère des points reçus (serveur Python avec calibration : "screen"). */
+  space?(): Space;
+  /** État de l'alignement sur le reflet (serveur Python uniquement). */
+  mirror?(): MirrorInfo | null;
+  /** Où l'œil devrait voir son propre reflet (écran 0–1). */
+  eye?(): [number, number] | null;
+  setCalibration?(data: Partial<CalibrationData>): void;
 }

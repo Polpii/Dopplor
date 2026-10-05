@@ -14,11 +14,22 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
 
 log = logging.getLogger("dopplor.capture")
+
+
+@dataclass
+class CameraModel:
+    """Optique de la caméra couleur, dans le repère du capteur (image non tournée)."""
+
+    width: int
+    height: int
+    K: np.ndarray  # matrice intrinsèque 3×3
+    dist: np.ndarray  # distorsion OpenCV (k1, k2, p1, p2, k3, k4, k5, k6)
 
 
 @dataclass
@@ -29,6 +40,9 @@ class Frame:
     t: float
     #: Horloge murale (ms), pour mesurer la latence jusqu'à l'écran côté navigateur.
     wall_ms: float
+    #: Profondeur (m) alignée sur l'image couleur non tournée, calculée en parallèle de
+    #: l'inférence : l'appel attend qu'elle soit prête. None si la caméra n'a pas de profondeur.
+    depth: Callable[[], np.ndarray | None] | None = None
 
 
 class Source:
@@ -37,11 +51,14 @@ class Source:
     name = "source"
     width = 0
     height = 0
+    #: Optique connue (caméras de profondeur) : permet de passer les points en 3D.
+    model: CameraModel | None = None
 
     #: Rotation appliquée à chaque image (caméra tournée pour un écran en portrait).
     ROTATIONS = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
     def __init__(self, rotate: int = 0) -> None:
+        self.rotate = rotate if rotate in self.ROTATIONS else 0
         self._rotate = self.ROTATIONS.get(rotate)
         self._cond = threading.Condition()
         self._frame: Frame | None = None
@@ -69,12 +86,27 @@ class Source:
         with self._cond:
             return self._frame
 
-    def _publish(self, rgb: np.ndarray, t: float, wall_ms: float) -> None:
+    def up(self) -> np.ndarray | None:
+        """Direction du haut (vecteur unitaire, repère caméra) mesurée par un capteur, si dispo."""
+        return None
+
+    def to_sensor(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Pixels de l'image tournée → pixels du capteur (image d'origine)."""
+        w, h = (self.height, self.width) if self.rotate in (90, 270) else (self.width, self.height)
+        if self.rotate == 90:  # image tournée de 90° horaire : (u, v) vient de (v, h0 - 1 - u)
+            return v, h - 1 - u
+        if self.rotate == 270:
+            return w - 1 - v, u
+        if self.rotate == 180:
+            return w - 1 - u, h - 1 - v
+        return u, v
+
+    def _publish(self, rgb: np.ndarray, t: float, wall_ms: float, depth: Callable[[], np.ndarray | None] | None = None) -> None:
         if self._rotate is not None:
             rgb = cv2.rotate(rgb, self._rotate)
         with self._cond:
             fid = self._frame.id + 1 if self._frame else 1
-            self._frame = Frame(fid, rgb, t, wall_ms)
+            self._frame = Frame(fid, rgb, t, wall_ms, depth)
             self._cond.notify_all()
         self._count += 1
         elapsed = t - self._window_start

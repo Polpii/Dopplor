@@ -7,3 +7,6 @@ public/models
 # Serveur Python
 .venv
 __pycache__
+
+# Calibration du miroir (propre à chaque installation)
+calibration.json

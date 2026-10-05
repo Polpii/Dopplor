@@ -69,7 +69,11 @@ export class NeonRenderer {
     new ResizeObserver(() => this.resize()).observe(canvas);
   }
 
-  render(scene: Scene, now: number, videoWidth: number, videoHeight: number): void {
+  /**
+   * `space` "camera" : points dans l'image caméra (cadrage « cover » + inversion miroir).
+   * "screen" : points déjà calés sur le reflet par le serveur, en coordonnées écran 0–1.
+   */
+  render(scene: Scene, now: number, videoWidth: number, videoHeight: number, space: "camera" | "screen" = "camera"): void {
     if (this.lost || !this.scene) return;
     const { gl } = this;
 
@@ -79,7 +83,10 @@ export class NeonRenderer {
       const scale = Math.max(this.cssWidth / videoWidth, this.cssHeight / videoHeight);
       const dw = videoWidth * scale;
       const dh = videoHeight * scale;
-      const view = { sx: -dw, tx: (this.cssWidth - dw) / 2 + dw, sy: dh, ty: (this.cssHeight - dh) / 2 };
+      const view =
+        space === "screen"
+          ? { sx: this.cssWidth, tx: 0, sy: this.cssHeight, ty: 0 }
+          : { sx: -dw, tx: (this.cssWidth - dw) / 2 + dw, sy: dh, ty: (this.cssHeight - dh) / 2 };
       this.figures.build(scene, now, view, this.segments);
     }
 

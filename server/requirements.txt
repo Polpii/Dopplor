@@ -2,4 +2,5 @@ mediapipe==1.0.1
 opencv-python-headless
 numpy
 aiohttp
+pyorbbecsdk2; sys_platform == "linux"  # Femto Bolt : profondeur + accéléromètre
 python-xlib; sys_platform == "linux"  # plein écran du kiosque (scripts/fullscreen.py)

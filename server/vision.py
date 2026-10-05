@@ -23,6 +23,7 @@ from mediapipe.tasks import python as mpt
 from mediapipe.tasks.python import vision as mpv
 
 from capture import Frame, Source
+from mirror import Mirror
 
 log = logging.getLogger("dopplor.vision")
 
@@ -64,6 +65,10 @@ class Result:
     detections: list[Detection]
     infer_ms: float
     zoomed: bool
+    #: "camera" : points en coordonnées de l'image ; "screen" : déjà calés sur le reflet.
+    space: str = "camera"
+    #: Où l'œil voit son propre reflet (coordonnées écran), pour vérifier la calibration.
+    eye: list[float] | None = None
 
 
 @dataclass
@@ -287,6 +292,10 @@ class Pipeline:
             "face": Task("face", models / "face_landmarker.task", prefer_gpu, 1),
         }
         self._prev_pose: tuple[float, np.ndarray] | None = None
+        self.mirror: Mirror | None = None
+        self._depth_frame = -1
+        self._depth: np.ndarray | None = None
+        self._face_eye_at = 0.0
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
     def start(self) -> "Pipeline":
@@ -322,8 +331,44 @@ class Pipeline:
         infer = (time.perf_counter() - t0) * 1000
         self.stats[kind].add(infer)
         self.zoomed[kind] = rois is not None
-        self.publish(Result(kind, frame, dets, infer, rois is not None))
-        return dets
+        shown, space = self._to_reflection(kind, frame, dets)
+        eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
+        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye))
+        return dets  # coordonnées image : servent aux zones de zoom
+
+    def _depth_of(self, frame: Frame) -> np.ndarray | None:
+        """Profondeur de l'image (attendue une seule fois par image, partagée par les 3 modèles)."""
+        if self._depth_frame != frame.id:
+            self._depth_frame = frame.id
+            try:
+                self._depth = frame.depth() if frame.depth else None
+            except Exception:  # noqa: BLE001 - alignement en retard ou raté : on fait sans
+                self._depth = None
+        return self._depth
+
+    def _to_reflection(self, kind: str, frame: Frame, dets: list[Detection]) -> tuple[list[Detection], str]:
+        """Si la calibration est active : 3D (profondeur), mise à jour de l'œil, puis projection
+        là où l'œil voit le reflet. Sinon, les points restent en coordonnées de l'image."""
+        m = self.mirror
+        if m is None or not m.active or not dets:
+            return dets, "camera"
+        depth = self._depth_of(frame)
+        lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}") for d in dets]
+        # L'œil : iris du visage (précis), sinon yeux du squelette.
+        if kind == "face" and lifted[0] is not None and len(dets[0].points) > 473:
+            m.update_eye((lifted[0].xyz[468] + lifted[0].xyz[473]) / 2)
+            self._face_eye_at = frame.t
+        elif kind == "pose" and lifted[0] is not None and frame.t - self._face_eye_at > 0.3:
+            m.update_eye((lifted[0].xyz[2] + lifted[0].xyz[5]) / 2)
+        out = []
+        for d, l in zip(dets, lifted):
+            uv = m.project(l.xyz) if l is not None else None
+            if uv is None:
+                return dets, "camera"
+            points = d.points.copy()
+            points[:, :2] = uv
+            out.append(Detection(points, d.key, d.label, d.expressions))
+        return out, "screen"
 
     def _process(self, frame: Frame) -> None:
         h, w = frame.rgb.shape[:2]
