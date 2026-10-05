@@ -30,6 +30,8 @@ A few things that took some trial and error:
 
 **Smoothing** uses the One Euro filter: heavy smoothing when you're still (no jitter), light smoothing when you move (no lag).
 
+**Prediction.** Even with everything above, the camera, the processing and the screen add up to a visible delay. So, like VR headsets do, the skeleton is drawn where it *will be* when the frame hits the screen, by extending each point's velocity. On a test video with a regular back-and-forth motion, this took the delay of the processing chain from 91 ms down to about 0. It's adjustable live with the arrow keys: too much and the figure overshoots when you stop abruptly.
+
 **Rendering** is plain WebGL2, no engine. Every bone is an instanced quad shaded with a distance field. Everything is drawn into an HDR buffer, then bloomed with a mip chain and tone mapped. The background is clamped to true black, because on a one-way mirror even a faint grey haze shows up.
 
 ## Running it
@@ -71,6 +73,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `C` | black screen / camera feed |
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
+| `↑` `↓` | more / less prediction (latency compensation) |
 | `F` | fullscreen |
 | `H` | hide the debug panel |
 

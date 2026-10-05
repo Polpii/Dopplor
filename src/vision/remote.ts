@@ -120,7 +120,8 @@ export class RemoteSource implements VisionSource {
       return { points, key: d.key, label: d.label, expressions: d.expr ? Float32Array.from(d.expr) : undefined };
     });
     if (header.kind === "pose") this.lastWall = header.wall;
-    if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.t);
+    // Daté à l'heure murale de capture : même horloge que Date.now() côté page (mesures de retard).
+    if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.wall);
   }
 
   private send(cmd: object): void {

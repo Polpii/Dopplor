@@ -16,8 +16,13 @@ export interface Track {
   label?: string;
   /** Identité imposée par une zone de recherche (clé "<corps>/<partie>") plutôt que par proximité. */
   zoned: boolean;
-  /** Points lissés, packés x, y, z, visibilité. */
+  /**
+   * Points affichés, packés x, y, z, visibilité : les points lissés, avancés dans le temps
+   * jusqu'au moment de l'affichage (voir `extrapolate`).
+   */
   points: Float32Array;
+  /** Moment (ms) de la dernière mise à jour, pour savoir de combien avancer les points. */
+  updatedAt: number;
   smoother: OneEuroBank;
   /** Deux dernières détections brutes et leurs horodatages (ms) : servent à prédire le mouvement. */
   raw: Float32Array;
@@ -37,6 +42,9 @@ export interface Track {
 }
 
 const MIN_HITS = 2;
+/** Prédiction : on n'avance jamais de plus de 250 ms, ni de plus de 12 % de l'image. */
+const MAX_LEAD_MS = 250;
+const MAX_LEAD_SHIFT = 0.12;
 /**
  * Après une perte : maintien, puis fondu de sortie (ms). Les mains tiennent plus longtemps :
  * un geste rapide floute l'image, la main reste accrochée au poignet le temps d'être retrouvée.
@@ -64,10 +72,11 @@ const EXPRESSION_INDEX = Object.fromEntries(EXPRESSIONS.map((e, i) => [e, i])) a
 const FADE_IN_MS = 120;
 
 // [minCutoff, beta] pour des coordonnées normalisées. Les mains bougent vite : beta plus fort.
+// Un peu moins lissé qu'avant : la prédiction compense le retard, et le lissage en ajoute.
 const SMOOTHING: Record<TaskKind, [number, number]> = {
-  pose: [1.0, 10],
-  hands: [1.5, 25],
-  face: [1.2, 12],
+  pose: [1.5, 15],
+  hands: [2.0, 30],
+  face: [1.5, 15],
 };
 
 // Point de référence de chaque type (moyenne des indices) pour suivre et dédoublonner.
@@ -166,6 +175,32 @@ export class Scene {
     return a;
   }
 
+  /**
+   * Compensation de latence : dessine chaque point là où il sera à l'affichage plutôt que là où
+   * il était à la capture, en prolongeant sa vitesse. `leadMs` = latence à compenser au moment
+   * où un résultat arrive ; on y ajoute le temps écoulé depuis. Les éléments perdus ne sont pas
+   * prolongés (ils partiraient à la dérive).
+   */
+  extrapolate(now: number, leadMs: number): void {
+    for (const map of Object.values(this.tracks)) {
+      for (const t of map.values()) {
+        const value = t.smoother.value;
+        const lead = t.lostAt === null && leadMs > 0 ? Math.min(leadMs + now - t.updatedAt, MAX_LEAD_MS) / 1000 : 0;
+        const v = t.smoother.velocity;
+        for (let i = 0; i < value.length; i += STRIDE) {
+          t.points[i] = value[i] + clamp(v[i] * lead, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
+          t.points[i + 1] = value[i + 1] + clamp(v[i + 1] * lead, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
+          t.points[i + 2] = value[i + 2] + v[i + 2] * lead;
+          t.points[i + 3] = value[i + 3];
+        }
+      }
+    }
+  }
+
+  get empty(): boolean {
+    return this.tracks.pose.size + this.tracks.hands.size + this.tracks.face.size === 0;
+  }
+
   /** Intensité d'une expression du visage, de 0 (repos) à 1 (très marquée). */
   static expression(face: Track, e: Expression): number {
     const v = face.expressions?.[EXPRESSION_INDEX[e]] ?? 0;
@@ -232,7 +267,8 @@ export class Scene {
       owner: null,
       label: d.label,
       zoned: !!d.key,
-      points: smoother.value,
+      points: smoother.value.slice(),
+      updatedAt: now,
       smoother,
       raw: d.points.slice(),
       rawPrev: d.points.slice(),
@@ -262,6 +298,8 @@ export class Scene {
     t.lostAnchor = null;
     t.label = d.label;
     t.smoother.filter(d.points, timestamp / 1000);
+    t.points.set(t.smoother.value);
+    t.updatedAt = now;
     t.rawPrev.set(t.raw);
     t.rawPrevTime = t.rawTime;
     t.raw.set(d.points);
