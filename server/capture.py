@@ -162,7 +162,8 @@ def camera_name(device: int | str) -> str:
     index = device if isinstance(device, int) else None
     name_file = Path(f"/sys/class/video4linux/video{index}/name") if index is not None else None
     if name_file and name_file.exists():
-        return name_file.read_text().strip()
+        # Le nom système est tronqué (« Orbbec Femto Bolt 3D Camera: Or ») : on garde la partie lisible.
+        return name_file.read_text().strip().split(":")[0]
     return f"caméra {device}"
 
 

@@ -46,4 +46,8 @@ setsid nohup chromium \
   --disable-features=Translate --ignore-gpu-blocklist --enable-gpu-rasterization \
   >"$LOGS/chromium.log" 2>&1 &
 
+# Vrai plein écran (GNOME ignore parfois celui demandé au lancement), puis souris hors champ.
+.venv/bin/python scripts/fullscreen.py Dopplor 20 || echo "Plein écran non appliqué (voir ci-dessus)."
+command -v xdotool >/dev/null && xdotool mousemove 100000 100000 2>/dev/null || true
+
 echo "Dopplor lancé sur l'écran $DISPLAY (journaux : $LOGS)."
