@@ -16,6 +16,8 @@ mkdir -p "$LOGS"
 
 pkill -f "server/server.py" 2>/dev/null || true
 pkill -f "$PROFILE" 2>/dev/null || true
+# Attendre que l'ancien serveur ait rendu la caméra avant d'en démarrer un nouveau.
+for _ in $(seq 1 50); do pgrep -f "server/server.py" >/dev/null || break; sleep 0.1; done
 [ "${1:-}" = "stop" ] && { echo "Dopplor arrêté."; exit 0; }
 
 # Session graphique de l'utilisateur connecté à l'écran (utile quand on lance via SSH).

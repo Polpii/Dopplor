@@ -93,8 +93,13 @@ class Camera(Source):
         self.device = device
         linux = sys.platform.startswith("linux")
         backend = cv2.CAP_V4L2 if linux else cv2.CAP_ANY
-        self.cap = cv2.VideoCapture(device, backend)
-        if not self.cap.isOpened():
+        # Quelques essais : la caméra peut être encore tenue par un serveur qui s'arrête.
+        for _ in range(20):
+            self.cap = cv2.VideoCapture(device, backend)
+            if self.cap.isOpened():
+                break
+            time.sleep(0.25)
+        else:
             raise RuntimeError(f"Impossible d'ouvrir la caméra {device}")
         # YUYV : pas de décodage JPEG (0,6 ms au lieu de 16 ms en 720p sur le PC de démo).
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
