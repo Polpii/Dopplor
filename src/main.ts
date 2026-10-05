@@ -1,22 +1,21 @@
-import { startCamera } from "./camera";
 import { NeonRenderer } from "./render/neon-renderer";
 import { Scene } from "./scene";
-import { VisionClient } from "./vision/client";
-import { EXPRESSIONS, type Expression, type PoseModel, type Roi, type TaskKind } from "./vision/protocol";
-import { faceRois, handRois, trackedBody } from "./vision/roi";
-
-// Un miroir = une personne devant. Avec 2, le modèle « invente » parfois un second corps fantôme.
-const MAX_PEOPLE = 1;
-const POSE_MODELS: PoseModel[] = ["lite", "full", "heavy"];
-const poseFile = (m: PoseModel) => `pose_landmarker_${m}.task`;
+import { EXPRESSIONS, type Expression, type TaskKind } from "./vision/protocol";
+import { RemoteSource, findServer } from "./vision/remote";
+import type { VisionSource } from "./vision/source";
+import { WebSource } from "./vision/web-source";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>("camera");
+const preview = $<HTMLImageElement>("preview");
 const canvas = $<HTMLCanvasElement>("overlay");
 const status = $("status");
 const hud = $("hud");
 const hudBg = $("hud-bg");
+const hudSource = $("hud-source");
+const hudCamera = $("hud-camera");
 const hudRender = $("hud-render");
+const hudLatency = $("hud-latency");
 const hudGpu = $("hud-gpu");
 const hudTask: Record<TaskKind, HTMLElement> = { pose: $("hud-pose"), hands: $("hud-hands"), face: $("hud-face") };
 const hudExpression = $("hud-expression");
@@ -41,60 +40,33 @@ function setStatus(text: string, isError = false): void {
 }
 
 async function main(): Promise<void> {
-  setStatus("Accès à la caméra…");
-  await startCamera(video);
-
-  setStatus("Chargement des modèles…");
-  let poseModel: PoseModel = "full";
-  const clients: Record<TaskKind, VisionClient> = {
-    pose: new VisionClient("pose", poseFile(poseModel), MAX_PEOPLE),
-    hands: new VisionClient("hands", "hand_landmarker.task", MAX_PEOPLE * 2),
-    face: new VisionClient("face", "face_landmarker.task", MAX_PEOPLE),
-  };
-  const all = Object.values(clients);
-
   const scene = new Scene();
   const renderer = new NeonRenderer(canvas);
   if (import.meta.env.DEV) Object.assign(window, { __scene: scene, __Scene: Scene }); // inspection depuis la console
-  for (const client of all) {
-    client.onResult = (detections, timestamp) => scene.update(client.kind, detections, timestamp);
-    client.onError = (message) => setStatus(`Erreur (${client.kind}) : ${message}`, true);
-  }
-  await Promise.all(all.map((c) => c.ready()));
-  setStatus("");
 
-  // Capture : à chaque nouvelle image caméra, une VideoFrame clonée (sans copie) par worker libre.
-  // Mains et visage sont cherchés dans des zones déduites du squelette (gros plan en pleine
-  // résolution) ; sans corps suivi, on cherche dans l'image entière.
-  const zoomed: Record<TaskKind, boolean> = { pose: false, hands: false, face: false };
-  const onVideoFrame = (now: number) => {
-    const free = all.filter((c) => c.wantsFrame);
-    if (free.length > 0) {
-      const frame = new VideoFrame(video, { timestamp: Math.round(now * 1000) });
-      const body = trackedBody(scene);
-      const { videoWidth: w, videoHeight: h } = video;
-      for (const c of free) {
-        let rois: Roi[] | null = null;
-        if (body && c.kind === "hands") rois = handRois(body, w, h, now);
-        if (body && c.kind === "face") rois = faceRois(body, w, h, now);
-        zoomed[c.kind] = rois !== null;
-        c.process(frame.clone(), now, rois);
-      }
-      frame.close();
-    }
-    video.requestVideoFrameCallback(onVideoFrame);
-  };
-  video.requestVideoFrameCallback(onVideoFrame);
+  // Serveur Python s'il y en a un (caméra + MediaPipe natif), sinon tout dans le navigateur.
+  setStatus("Connexion…");
+  const server = await findServer();
+  const source: VisionSource = server ? await RemoteSource.connect(server, preview) : await WebSource.start(video, scene, setStatus);
+  document.body.classList.add(`source-${source.label}`);
+  source.onResult = (kind, detections, timestamp) => scene.update(kind, detections, timestamp);
+  source.onError = (message) => setStatus(message, message !== "");
+  setStatus("");
 
   // Rendu : découplé de l'inférence, on ne redessine que quand la scène change.
   let drawnVersion = -1;
   let draws = 0;
+  let latency = 0;
   const onAnimationFrame = (now: number) => {
     const fading = scene.prune(now);
     if (fading || scene.version !== drawnVersion) {
-      renderer.render(scene, now, video.videoWidth, video.videoHeight);
+      const [w, h] = source.frameSize();
+      renderer.render(scene, now, w, h);
       drawnVersion = scene.version;
       draws++;
+      // Latence capture → image dessinée (hors affichage de l'écran lui-même).
+      const l = source.latency();
+      if (l !== null && l < 1000) latency += (l - latency) * 0.1;
     }
     requestAnimationFrame(onAnimationFrame);
   };
@@ -102,17 +74,16 @@ async function main(): Promise<void> {
 
   // Panneau d'infos, rafraîchi deux fois par seconde.
   const updateHud = () => {
+    const [w, h] = source.frameSize();
     hudBg.textContent = document.body.classList.contains("black") ? "écran noir" : "flux caméra";
-    hudRender.textContent = `${draws * 2} img/s · ${video.videoWidth}×${video.videoHeight}`;
-    hudGpu.textContent = clients.pose.gpu || "…";
-    hudGpu.classList.toggle("warn", /Radeon\(TM\) Graphics|Intel|SwiftShader|llvmpipe|Basic Render/i.test(clients.pose.gpu));
+    hudSource.textContent = source.label === "python" ? "python (natif)" : "navigateur";
+    hudCamera.textContent = source.cameraText();
+    hudRender.textContent = `${draws * 2} img/s · ${w}×${h}`;
+    hudLatency.textContent = latency ? `${Math.round(latency)} ms capture → rendu` : "–";
+    hudGpu.textContent = source.gpu() || "…";
+    hudGpu.classList.toggle("warn", /Radeon\(TM\) Graphics|Intel|SwiftShader|llvmpipe|Basic Render|^CPU$/i.test(source.gpu()));
     draws = 0;
-    for (const c of all) {
-      const mode = c.kind === "pose" ? `${poseModel} · ` : zoomed[c.kind] ? "zoom · " : "plein cadre · ";
-      hudTask[c.kind].textContent = c.enabled
-        ? `${mode}${c.delegate ?? "…"} · ${Math.round(c.fps)} fps · ${c.inferMs.toFixed(1)} ms`
-        : "désactivé";
-    }
+    for (const kind of Object.keys(hudTask) as TaskKind[]) hudTask[kind].textContent = source.taskText(kind);
     // Expressions les plus marquées du visage suivi.
     const face = scene.faces[Symbol.iterator]().next().value;
     const shown = face?.expressions
@@ -124,9 +95,7 @@ async function main(): Promise<void> {
   setInterval(updateHud, 500);
 
   const toggle = (kind: TaskKind) => {
-    const c = clients[kind];
-    c.enabled = !c.enabled;
-    if (!c.enabled) scene.clear(kind);
+    if (!source.toggle(kind)) scene.clear(kind);
   };
 
   window.addEventListener("keydown", async (e) => {
@@ -134,6 +103,7 @@ async function main(): Promise<void> {
     switch (e.key.toLowerCase()) {
       case "c":
         document.body.classList.toggle("black");
+        source.setCameraView(!document.body.classList.contains("black"));
         break;
       case "1":
         toggle("pose");
@@ -145,9 +115,8 @@ async function main(): Promise<void> {
         toggle("face");
         break;
       case "p":
-        poseModel = POSE_MODELS[(POSE_MODELS.indexOf(poseModel) + 1) % POSE_MODELS.length];
-        hudTask.pose.textContent = `chargement ${poseModel}…`;
-        await clients.pose.setModel(poseFile(poseModel));
+        hudTask.pose.textContent = "changement de modèle…";
+        await source.cyclePoseModel();
         break;
       case "f":
         if (document.fullscreenElement) await document.exitFullscreen();

@@ -9,14 +9,18 @@
   </head>
   <body class="black">
     <video id="camera" playsinline muted></video>
+    <img id="preview" alt="" />
     <canvas id="overlay"></canvas>
 
     <div id="status">Démarrage…</div>
 
     <aside id="hud">
       <div class="row"><span>Fond</span><b id="hud-bg">–</b></div>
+      <div class="row"><span>Source</span><b id="hud-source">–</b></div>
+      <div class="row"><span>Caméra</span><b id="hud-camera">–</b></div>
       <div class="row"><span>GPU</span><b id="hud-gpu">–</b></div>
       <div class="row"><span>Rendu</span><b id="hud-render">–</b></div>
+      <div class="row"><span>Latence</span><b id="hud-latency">–</b></div>
       <div class="row"><span>Corps</span><b id="hud-pose">–</b></div>
       <div class="row"><span>Mains</span><b id="hud-hands">–</b></div>
       <div class="row"><span>Visage</span><b id="hud-face">–</b></div>

@@ -22,6 +22,7 @@ body {
 }
 
 #camera,
+#preview,
 #overlay {
   position: fixed;
   inset: 0;
@@ -29,8 +30,10 @@ body {
   height: 100%;
 }
 
-/* Le reflet d'un miroir est inversé gauche/droite : on affiche la caméra pareil. */
-#camera {
+/* Le reflet d'un miroir est inversé gauche/droite : on affiche la caméra pareil.
+   #preview : image envoyée par le serveur Python (source « python »). */
+#camera,
+#preview {
   object-fit: cover;
   transform: scaleX(-1);
   opacity: 0.55;
@@ -40,8 +43,14 @@ body {
 /* Écran noir : le noir est transparent derrière le miroir sans tain,
    seule la lumière de l'overlay est visible. (Pas `visibility: hidden` : la vidéo doit
    rester « affichée » pour que requestVideoFrameCallback continue de recevoir les images.) */
-body.black #camera {
+body.black #camera,
+body.black #preview {
   opacity: 0;
+}
+/* Une seule image caméra selon la source. */
+body.source-python #camera,
+body:not(.source-python) #preview {
+  display: none;
 }
 body.black {
   cursor: none;

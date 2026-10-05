@@ -1,0 +1,356 @@
+"""Inférence MediaPipe native : corps, mains, visage.
+
+Les trois modèles s'enchaînent dans un seul thread. Sur GPU c'est plus rapide qu'en parallèle
+(mesuré sur la RTX 2080 : 9,7 ms à la suite contre 12 ms en threads, les modèles se disputent la
+carte). Le corps est envoyé dès qu'il est prêt ; les mains et le visage sont ensuite cherchés en
+gros plan autour du squelette de la même image.
+"""
+from __future__ import annotations
+
+import logging
+import math
+import subprocess
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+import cv2
+import mediapipe as mp
+import numpy as np
+from mediapipe.tasks import python as mpt
+from mediapipe.tasks.python import vision as mpv
+
+from capture import Frame, Source
+
+log = logging.getLogger("dopplor.vision")
+
+KINDS = ("pose", "hands", "face")
+POSE_MODELS = ("lite", "full", "heavy")
+#: Doit correspondre à EXPRESSIONS dans src/vision/protocol.ts.
+EXPRESSIONS = ("smile", "jawOpen", "blinkLeft", "blinkRight", "browUp", "browDown", "eyeWide", "pucker", "cheekPuff", "frown")
+#: Taille des découpes envoyées aux modèles mains/visage.
+CROP_SIZE = 256
+#: Identité du corps suivi. Un miroir = une personne ; les zones s'appellent "p0/left", "p0/face"…
+BODY_KEY = "p0"
+
+# Indices MediaPipe Pose.
+NOSE, EYES, EARS, MOUTH, SHOULDERS = 0, (2, 5), (7, 8), (9, 10), (11, 12)
+ARM = {"left": (15, 13, 17, 19), "right": (16, 14, 18, 20)}  # poignet, coude, auriculaire, index
+MIN_VISIBILITY = 0.3
+
+
+@dataclass
+class Detection:
+    points: np.ndarray  # (n, 4) float32 : x, y, z, visibilité — normalisés sur l'image entière
+    key: str | None = None
+    label: str | None = None
+    expressions: list[float] | None = None
+
+
+@dataclass
+class Roi:
+    key: str
+    x: float
+    y: float
+    size: float
+
+
+@dataclass
+class Result:
+    kind: str
+    frame: Frame
+    detections: list[Detection]
+    infer_ms: float
+    zoomed: bool
+
+
+@dataclass
+class TaskStats:
+    count: int = 0
+    infer_ms: float = 0.0
+    fps: float = 0.0
+    window_start: float = field(default_factory=time.monotonic)
+
+    def add(self, infer_ms: float) -> None:
+        self.count += 1
+        self.infer_ms += (infer_ms - self.infer_ms) * 0.1
+        now = time.monotonic()
+        if now - self.window_start >= 1.0:
+            self.fps = self.count / (now - self.window_start)
+            self.count = 0
+            self.window_start = now
+
+
+def _delegate(name: str) -> mpt.BaseOptions.Delegate:
+    return mpt.BaseOptions.Delegate.GPU if name == "GPU" else mpt.BaseOptions.Delegate.CPU
+
+
+def create_landmarker(kind: str, model: Path, delegate: str, count: int):
+    base = mpt.BaseOptions(model_asset_path=str(model), delegate=_delegate(delegate))
+    video = mpv.RunningMode.VIDEO
+    if kind == "pose":
+        return mpv.PoseLandmarker.create_from_options(
+            mpv.PoseLandmarkerOptions(base_options=base, running_mode=video, num_poses=count)
+        )
+    if kind == "hands":
+        return mpv.HandLandmarker.create_from_options(
+            mpv.HandLandmarkerOptions(
+                base_options=base,
+                running_mode=video,
+                num_hands=count,
+                # En gros plan, les faux positifs sont rares : seuils un peu plus bas.
+                min_hand_detection_confidence=0.4,
+                min_hand_presence_confidence=0.4,
+                min_tracking_confidence=0.4,
+            )
+        )
+    return mpv.FaceLandmarker.create_from_options(
+        mpv.FaceLandmarkerOptions(base_options=base, running_mode=video, num_faces=count, output_face_blendshapes=True)
+    )
+
+
+def expressions_from(blendshapes) -> list[float]:
+    s = {c.category_name: c.score for c in blendshapes}
+    avg = lambda a, b: (s.get(a, 0.0) + s.get(b, 0.0)) / 2  # noqa: E731
+    values = {
+        "smile": avg("mouthSmileLeft", "mouthSmileRight"),
+        "jawOpen": s.get("jawOpen", 0.0),
+        "blinkLeft": s.get("eyeBlinkLeft", 0.0),
+        "blinkRight": s.get("eyeBlinkRight", 0.0),
+        "browUp": max(s.get("browInnerUp", 0.0), avg("browOuterUpLeft", "browOuterUpRight")),
+        "browDown": avg("browDownLeft", "browDownRight"),
+        "eyeWide": avg("eyeWideLeft", "eyeWideRight"),
+        "pucker": s.get("mouthPucker", 0.0),
+        "cheekPuff": s.get("cheekPuff", 0.0),
+        "frown": avg("mouthFrownLeft", "mouthFrownRight"),
+    }
+    return [values[e] for e in EXPRESSIONS]
+
+
+def pack(landmarks, with_visibility: bool, x0=0.0, y0=0.0, sx=1.0, sy=1.0, sz=1.0) -> np.ndarray:
+    out = np.empty((len(landmarks), 4), dtype=np.float32)
+    for i, l in enumerate(landmarks):
+        out[i] = (x0 + l.x * sx, y0 + l.y * sy, l.z * sz, (l.visibility or 0.0) if with_visibility else 1.0)
+    return out
+
+
+class Task:
+    """Un type de modèle : un détecteur plein cadre + un détecteur par zone (suivi propre à chacun)."""
+
+    def __init__(self, kind: str, model: Path, prefer_gpu: bool, count: int) -> None:
+        self.kind = kind
+        self.zones = {"hands": ("left", "right"), "face": ("face",)}.get(kind, ())
+        self.delegate = "CPU"
+        self.full = None
+        self.zone: dict[str, object] = {}
+        self.load(model, prefer_gpu, count)
+        self.crop = np.zeros((CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8)
+
+    def load(self, model: Path, prefer_gpu: bool, count: int) -> None:
+        self.close()
+        for delegate in (["GPU", "CPU"] if prefer_gpu else ["CPU"]):
+            try:
+                self.full = create_landmarker(self.kind, model, delegate, count)
+                self.zone = {z: create_landmarker(self.kind, model, delegate, 1) for z in self.zones}
+                self.delegate = delegate
+                break
+            except Exception as e:  # noqa: BLE001 - repli CPU si le GPU n'est pas utilisable
+                self.close()
+                if delegate == "CPU":
+                    raise
+                log.warning("%s : GPU indisponible (%s), repli sur CPU", self.kind, e)
+        # Préchauffage : la première inférence initialise le GPU (plusieurs centaines de ms).
+        blank = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((CROP_SIZE, CROP_SIZE, 3), np.uint8))
+        self._last_ts = 0
+        for lm in [self.full, *self.zone.values()]:
+            for _ in range(2):
+                lm.detect_for_video(blank, self._next_ts(None))
+        log.info("%s prêt (%s)", self.kind, self.delegate)
+
+    def close(self) -> None:
+        for lm in [self.full, *self.zone.values()]:
+            if lm is not None:
+                lm.close()
+        self.full = None
+        self.zone = {}
+
+    def _next_ts(self, frame_ts: int | None) -> int:
+        # MediaPipe exige des timestamps strictement croissants pour chaque détecteur.
+        ts = max(self._last_ts + 1, frame_ts or 0)
+        self._last_ts = ts
+        return ts
+
+    def detect(self, frame: Frame, rois: list[Roi] | None) -> list[Detection]:
+        ts = self._next_ts(int(frame.t * 1000))
+        if rois is None or not self.zones:
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame.rgb)
+            return self._unpack(self.full.detect_for_video(image, ts))
+        h, w = frame.rgb.shape[:2]
+        out: list[Detection] = []
+        for roi in rois:
+            lm = self.zone.get(roi.key.split("/")[1])
+            if lm is None or not self._crop(frame.rgb, roi):
+                continue
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self.crop)
+            mapping = dict(x0=roi.x / w, y0=roi.y / h, sx=roi.size / w, sy=roi.size / h, sz=roi.size / w)
+            out += self._unpack(lm.detect_for_video(image, ts), mapping, roi.key)[:1]
+        return out
+
+    def _unpack(self, result, mapping: dict | None = None, key: str | None = None) -> list[Detection]:
+        m = mapping or {}
+        if self.kind == "pose":
+            return [Detection(pack(l, True, **m), key=BODY_KEY) for l in result.pose_landmarks]
+        if self.kind == "hands":
+            return [
+                Detection(pack(l, False, **m), key=key, label=(result.handedness[i][0].category_name if result.handedness[i] else None))
+                for i, l in enumerate(result.hand_landmarks)
+            ]
+        return [
+            Detection(pack(l, False, **m), key=key, expressions=expressions_from(result.face_blendshapes[i]) if result.face_blendshapes else None)
+            for i, l in enumerate(result.face_landmarks)
+        ]
+
+    def _crop(self, rgb: np.ndarray, roi: Roi) -> bool:
+        """Copie la zone carrée dans le tampon de découpe (les parties hors image restent noires)."""
+        h, w = rgb.shape[:2]
+        # ceil : le coin visible ne doit jamais être avant le coin de la zone (sinon indice négatif).
+        x0, y0 = max(0, math.ceil(roi.x)), max(0, math.ceil(roi.y))
+        x1, y1 = min(w, int(roi.x + roi.size)), min(h, int(roi.y + roi.size))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return False
+        k = CROP_SIZE / roi.size
+        dx0 = min(CROP_SIZE - 1, max(0, round((x0 - roi.x) * k)))
+        dy0 = min(CROP_SIZE - 1, max(0, round((y0 - roi.y) * k)))
+        dx1 = min(CROP_SIZE, max(dx0 + 1, round((x1 - roi.x) * k)))
+        dy1 = min(CROP_SIZE, max(dy0 + 1, round((y1 - roi.y) * k)))
+        self.crop[:] = 0
+        self.crop[dy0:dy1, dx0:dx1] = cv2.resize(rgb[y0:y1, x0:x1], (dx1 - dx0, dy1 - dy0), interpolation=cv2.INTER_AREA)
+        return True
+
+
+def hand_rois(pose: np.ndarray, w: int, h: int, speed: np.ndarray) -> list[Roi]:
+    """Une zone par main visible, centrée un peu au-delà du poignet vers les doigts (cf. roi.ts)."""
+    at = lambda i: np.array([pose[i, 0] * w, pose[i, 1] * h])  # noqa: E731
+    shoulders = np.linalg.norm(at(SHOULDERS[0]) - at(SHOULDERS[1]))
+    rois = []
+    for side, (wrist_i, elbow_i, pinky_i, index_i) in ARM.items():
+        if pose[wrist_i, 3] < MIN_VISIBILITY:
+            continue
+        wrist, elbow = at(wrist_i), at(elbow_i)
+        knuckles = (at(index_i) + at(pinky_i)) / 2
+        forearm = np.linalg.norm(wrist - elbow)
+        hand_len = np.linalg.norm(wrist - knuckles)
+        direction = knuckles - wrist if np.linalg.norm(knuckles - wrist) > 2 else wrist - elbow
+        n = direction / (np.linalg.norm(direction) or 1)
+        base = max(hand_len * 2.6, forearm * 1.1, shoulders * 0.55)
+        # La zone s'agrandit avec la vitesse du poignet (marge pour ~60 ms de mouvement).
+        size = float(np.clip(base + speed[wrist_i] * w * 0.06, 64, min(w, h) * 0.8))
+        c = wrist + n * base * 0.3
+        rois.append(Roi(f"{BODY_KEY}/{side}", c[0] - size / 2, c[1] - size / 2, size))
+    return rois
+
+
+def face_rois(pose: np.ndarray, w: int, h: int, speed: np.ndarray) -> list[Roi]:
+    if pose[NOSE, 3] < MIN_VISIBILITY:
+        return []
+    at = lambda i: np.array([pose[i, 0] * w, pose[i, 1] * h])  # noqa: E731
+    eyes = (at(EYES[0]) + at(EYES[1])) / 2
+    mouth = (at(MOUTH[0]) + at(MOUTH[1])) / 2
+    c = (eyes + mouth + at(NOSE)) / 3
+    head = max(
+        np.linalg.norm(at(EARS[0]) - at(EARS[1])) * 2.0,
+        np.linalg.norm(at(EYES[0]) - at(EYES[1])) * 4.0,
+        np.linalg.norm(at(SHOULDERS[0]) - at(SHOULDERS[1])) * 0.6,
+    )
+    size = float(np.clip(head + speed[NOSE] * w * 0.06, 80, min(w, h)))
+    return [Roi(f"{BODY_KEY}/face", c[0] - size / 2, c[1] - size / 2, size)]
+
+
+class Pipeline:
+    """Boucle d'inférence : dernière image → corps → mains → visage, chaque résultat publié aussitôt."""
+
+    def __init__(self, source: Source, models: Path, pose_model: str, prefer_gpu: bool, publish: Callable[[Result], None]) -> None:
+        self.source = source
+        self.models = models
+        self.prefer_gpu = prefer_gpu
+        self.publish = publish
+        self.pose_model = pose_model
+        self.enabled = {k: True for k in KINDS}
+        self.stats = {k: TaskStats() for k in KINDS}
+        self.zoomed = {k: False for k in KINDS}
+        self._pending_model: str | None = None
+        self.tasks = {
+            "pose": Task("pose", models / f"pose_landmarker_{pose_model}.task", prefer_gpu, 1),
+            "hands": Task("hands", models / "hand_landmarker.task", prefer_gpu, 2),
+            "face": Task("face", models / "face_landmarker.task", prefer_gpu, 1),
+        }
+        self._prev_pose: tuple[float, np.ndarray] | None = None
+        self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
+
+    def start(self) -> "Pipeline":
+        self._thread.start()
+        return self
+
+    def set_pose_model(self, model: str) -> None:
+        if model in POSE_MODELS:
+            self._pending_model = model  # appliqué entre deux images par le thread d'inférence
+
+    def delegates(self) -> dict[str, str]:
+        return {k: t.delegate for k, t in self.tasks.items()}
+
+    def _loop(self) -> None:
+        last_id = 0
+        while True:
+            if self._pending_model:
+                model, self._pending_model = self._pending_model, None
+                self.tasks["pose"].load(self.models / f"pose_landmarker_{model}.task", self.prefer_gpu, 1)
+                self.pose_model = model
+            frame = self.source.wait(last_id)
+            if frame is None:
+                continue
+            last_id = frame.id
+            try:
+                self._process(frame)
+            except Exception:  # noqa: BLE001 - une image ratée ne doit pas arrêter le miroir
+                log.exception("inférence")
+
+    def _run(self, kind: str, frame: Frame, rois: list[Roi] | None) -> list[Detection]:
+        t0 = time.perf_counter()
+        dets = self.tasks[kind].detect(frame, rois)
+        infer = (time.perf_counter() - t0) * 1000
+        self.stats[kind].add(infer)
+        self.zoomed[kind] = rois is not None
+        self.publish(Result(kind, frame, dets, infer, rois is not None))
+        return dets
+
+    def _process(self, frame: Frame) -> None:
+        h, w = frame.rgb.shape[:2]
+        pose = None
+        if self.enabled["pose"]:
+            dets = self._run("pose", frame, None)
+            pose = dets[0].points if dets else None
+        # Vitesse des points du corps (unités normalisées / s) : agrandit les zones des gestes rapides.
+        speed = np.zeros(33, dtype=np.float32)
+        if pose is not None and self._prev_pose is not None:
+            dt = frame.t - self._prev_pose[0]
+            if 0 < dt < 0.2:
+                speed = np.linalg.norm(pose[:, :2] - self._prev_pose[1][:, :2], axis=1) / dt
+        self._prev_pose = (frame.t, pose) if pose is not None else None
+
+        if self.enabled["hands"]:
+            self._run("hands", frame, hand_rois(pose, w, h, speed) if pose is not None else None)
+        if self.enabled["face"]:
+            self._run("face", frame, face_rois(pose, w, h, speed) if pose is not None else None)
+
+
+def gpu_name() -> str:
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "inconnu"
+

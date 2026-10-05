@@ -3,3 +3,7 @@ dist
 # Générés par scripts/setup-assets.mjs
 public/mediapipe
 public/models
+
+# Serveur Python
+.venv
+__pycache__

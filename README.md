@@ -34,6 +34,25 @@ A few things that took some trial and error:
 
 ## Running it
 
+There are two ways to run it. In both cases the page and the neon rendering are the same, only the tracking moves.
+
+### On the mirror: Python server (lowest latency)
+
+On the actual mirror, a small Python server reads the camera and runs MediaPipe natively on the GPU, then streams the landmarks to the page over a WebSocket. The browser only draws.
+
+Why: on the demo PC (Ubuntu, RTX 2080) native MediaPipe runs the full body model in 4.6 ms, against ~20 ms in the browser on a laptop GPU. The camera is read as raw YUYV, which takes 0.6 ms per frame instead of 16 ms to decode MJPG. Frames are never queued: if the models fall behind, old frames are dropped.
+
+```bash
+./scripts/update.sh   # git pull, builds the page, installs the Python deps (and Node if missing)
+./scripts/demo.sh     # starts the server, then Chromium fullscreen on the mirror screen
+./scripts/demo.sh --rotate 90   # if the camera is mounted sideways for a portrait screen
+./scripts/demo.sh stop
+```
+
+`demo.sh` also works over SSH: it opens Chromium on the screen of the logged-in user. Logs go to `~/.cache/dopplor`. Run `.venv/bin/python server/server.py --help` for camera options (resolution, exposure, pose model...). There's also a `--video file.mp4` option to test without a camera.
+
+### On a laptop: everything in the browser
+
 You need Node 20+, Chrome or Edge, and a webcam.
 
 ```bash
@@ -62,11 +81,17 @@ The panel shows the GPU, the speed of each model, whether hands and face run on 
 ## Code
 
 ```
+server/
+  server.py          web server + WebSocket, serves the built page
+  capture.py         camera thread (latest frame only)
+  vision.py          MediaPipe pipeline, hand/face crops from the skeleton
 src/
-  main.ts            camera loop, keyboard, debug panel
+  main.ts            picks the source (Python server or browser), render loop, debug panel
   scene.ts           tracking, smoothing, expressions
   vision/
-    vision.worker.ts MediaPipe inference (one worker per model)
+    remote.ts        landmarks from the Python server
+    web-source.ts    webcam + workers, when there's no server
+    vision.worker.ts MediaPipe inference in the browser (one worker per model)
     roi.ts           where to look for hands and face, from the skeleton
     client.ts        main thread side of a worker
   render/
@@ -75,6 +100,8 @@ src/
     shaders.ts
 scripts/
   setup-assets.mjs   fetches the models
+  update.sh          updates the demo PC from GitHub
+  demo.sh            starts the demo
 ```
 
 ## Not done yet
