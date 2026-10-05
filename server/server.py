@@ -107,7 +107,10 @@ def preview_loop(source: Source, hub: Hub, width: int = 640, fps: float = 15) ->
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serveur de vision Dopplor")
     parser.add_argument("--camera", default="0", help="index ou chemin de la caméra (défaut 0)")
-    parser.add_argument("--camera-backend", default="auto", choices=["auto", "orbbec", "v4l2"], help="orbbec : couleur + profondeur via le SDK")
+    # V4L2 par défaut : c'est le chemin le plus direct (≈ 0,6 ms par image). Le SDK Orbbec, qui
+    # donne la profondeur pour l'alignement sur le reflet, a ajouté jusqu'à une seconde de retard
+    # (file d'attente interne) : à n'utiliser qu'explicitement tant que ce n'est pas réglé.
+    parser.add_argument("--camera-backend", default="v4l2", choices=["auto", "orbbec", "v4l2"], help="orbbec : couleur + profondeur via le SDK (alignement sur le reflet)")
     parser.add_argument("--video", help="fichier vidéo à rejouer au lieu de la caméra")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
