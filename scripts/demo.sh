@@ -51,7 +51,11 @@ SCREEN=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}' | tr x ,)
 # d'attendre le prochain rafraîchissement (jusqu'à ~16 ms de gagnés à 60 Hz). Contrepartie
 # possible : une « déchirure » horizontale sur les mouvements rapides. DOPPLOR_VSYNC=1 la remet.
 LATENCY_FLAGS=()
-[ "${DOPPLOR_VSYNC:-0}" = "1" ] || LATENCY_FLAGS=(--disable-gpu-vsync --disable-frame-rate-limit)
+NOVSYNC_QUERY=""
+if [ "${DOPPLOR_VSYNC:-0}" != "1" ]; then
+  LATENCY_FLAGS=(--disable-gpu-vsync --disable-frame-rate-limit)
+  NOVSYNC_QUERY="?novsync"  # la page cadence alors elle-même son rendu
+fi
 
 setsid nohup chromium \
   --kiosk "http://127.0.0.1:$PORT/" \

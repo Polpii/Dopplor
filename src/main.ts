@@ -76,7 +76,14 @@ async function main(): Promise<void> {
   const server = await findServer();
   const source: VisionSource = server ? await RemoteSource.connect(server, preview) : await WebSource.start(video, scene, setStatus);
   document.body.classList.add(`source-${source.label}`);
-  source.onResult = (kind, detections, timestamp) => scene.update(kind, detections, timestamp);
+  // Kiosque sans synchronisation verticale (demo.sh ajoute ?novsync) : on ne s'appuie plus sur
+  // requestAnimationFrame, que Chrome recadence alors à ~60 Hz dès qu'on ne dessine pas à chaque
+  // fois. On dessine dès qu'un résultat arrive, et un minuteur fait avancer la prédiction.
+  const noVsync = new URLSearchParams(location.search).has("novsync");
+  source.onResult = (kind, detections, timestamp) => {
+    scene.update(kind, detections, timestamp);
+    if (noVsync) draw(performance.now());
+  };
   source.onError = (message) => setStatus(message, message !== "");
   setStatus("");
   const calibration = new CalibrationPanel((data) => source.setCalibration?.(data));
@@ -89,12 +96,11 @@ async function main(): Promise<void> {
   let lastDraw = 0;
   let draws = 0;
   let latency = 0;
-  const onAnimationFrame = (now: number) => {
+  const draw = (now: number) => {
     const fading = scene.prune(now);
     const predicting = lead > 0 && !scene.empty;
-    // Sans vsync (kiosque), requestAnimationFrame n'est plus limité à 60 Hz : on plafonne le rendu
-    // « de prédiction » pour ne pas voler la carte graphique à l'inférence. Un nouveau résultat,
-    // lui, est dessiné tout de suite.
+    // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
+    // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
     if ((predicting && due) || fading || scene.version !== drawnVersion) {
       lastDraw = now;
@@ -107,9 +113,16 @@ async function main(): Promise<void> {
       const l = source.latency();
       if (l !== null && l < 1000) latency += (l - latency) * 0.1;
     }
-    requestAnimationFrame(onAnimationFrame);
   };
-  requestAnimationFrame(onAnimationFrame);
+  if (noVsync) {
+    setInterval(() => draw(performance.now()), 1000 / MAX_RENDER_FPS);
+  } else {
+    const onAnimationFrame = (now: number) => {
+      draw(now);
+      requestAnimationFrame(onAnimationFrame);
+    };
+    requestAnimationFrame(onAnimationFrame);
+  }
 
   // Panneau d'infos, rafraîchi deux fois par seconde.
   const updateHud = () => {
