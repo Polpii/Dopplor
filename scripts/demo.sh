@@ -47,12 +47,19 @@ curl -sf "http://127.0.0.1:$PORT/api/info" >/dev/null || { echo "Le serveur ne r
 command -v xdotool >/dev/null && xdotool key Escape 2>/dev/null || true
 SCREEN=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}' | tr x ,)
 
+# Sans synchronisation verticale : l'image part vers l'écran dès qu'elle est prête, au lieu
+# d'attendre le prochain rafraîchissement (jusqu'à ~16 ms de gagnés à 60 Hz). Contrepartie
+# possible : une « déchirure » horizontale sur les mouvements rapides. DOPPLOR_VSYNC=1 la remet.
+LATENCY_FLAGS=()
+[ "${DOPPLOR_VSYNC:-0}" = "1" ] || LATENCY_FLAGS=(--disable-gpu-vsync --disable-frame-rate-limit)
+
 setsid nohup chromium \
   --kiosk "http://127.0.0.1:$PORT/" \
   --start-fullscreen --window-position=0,0 --window-size="${SCREEN:-1920,1080}" \
   --user-data-dir="$PROFILE" \
   --no-first-run --noerrdialogs --disable-infobars --disable-session-crashed-bubble \
   --disable-features=Translate --ignore-gpu-blocklist --enable-gpu-rasterization \
+  "${LATENCY_FLAGS[@]}" \
   >"$LOGS/chromium.log" 2>&1 &
 
 # Vrai plein écran (GNOME ignore parfois celui demandé au lancement), puis souris hors champ.
