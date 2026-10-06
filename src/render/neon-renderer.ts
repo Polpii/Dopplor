@@ -28,6 +28,8 @@ export class NeonRenderer {
   private gl: WebGL2RenderingContext;
   private segments = new SegmentBuffer();
   private figures = new FigureBuilder();
+  /** Dernière transformation image caméra → écran (px CSS), pour placer l'interface sur le corps. */
+  private view = { sx: 1, tx: 0, sy: 1, ty: 0 };
   private lost = false;
 
   private segmentProgram!: Program;
@@ -73,7 +75,15 @@ export class NeonRenderer {
    * `space` "camera" : points dans l'image caméra (cadrage « cover » + inversion miroir).
    * "screen" : points déjà calés sur le reflet par le serveur, en coordonnées écran 0–1.
    */
-  render(scene: Scene, now: number, videoWidth: number, videoHeight: number, space: "camera" | "screen" = "camera"): void {
+  render(
+    scene: Scene,
+    now: number,
+    videoWidth: number,
+    videoHeight: number,
+    space: "camera" | "screen" = "camera",
+    /** Autres scènes dessinées par-dessus (ex. le double qui montre un signe). */
+    extra: Scene[] = [],
+  ): void {
     if (this.lost || !this.scene) return;
     const { gl } = this;
 
@@ -87,7 +97,8 @@ export class NeonRenderer {
         space === "screen"
           ? { sx: this.cssWidth, tx: 0, sy: this.cssHeight, ty: 0 }
           : { sx: -dw, tx: (this.cssWidth - dw) / 2 + dw, sy: dh, ty: (this.cssHeight - dh) / 2 };
-      this.figures.build(scene, now, view, this.segments);
+      this.view = view;
+      for (const s of [scene, ...extra]) this.figures.build(s, now, view, this.segments);
     }
 
     // 1. Segments → cible HDR, en blending additif.
@@ -141,6 +152,20 @@ export class NeonRenderer {
     this.bindTexture(0, this.scene.tex);
     this.bindTexture(1, this.mips.length ? this.mips[0].tex : this.scene.tex);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** Partie de l'image caméra (0–1) réellement visible à l'écran (le cadrage « cover » rogne). */
+  visibleArea(): { x0: number; x1: number; y0: number; y1: number } {
+    const xa = (0 - this.view.tx) / this.view.sx;
+    const xb = (this.cssWidth - this.view.tx) / this.view.sx;
+    const ya = (0 - this.view.ty) / this.view.sy;
+    const yb = (this.cssHeight - this.view.ty) / this.view.sy;
+    return { x0: Math.min(xa, xb), x1: Math.max(xa, xb), y0: Math.min(ya, yb), y1: Math.max(ya, yb) };
+  }
+
+  /** Point de l'image caméra (0–1) → position à l'écran (px CSS), comme le dessine le rendu. */
+  toScreen(x: number, y: number): [number, number] {
+    return [this.view.tx + this.view.sx * x, this.view.ty + this.view.sy * y];
   }
 
   // --- Initialisation des ressources GPU ---------------------------------------------

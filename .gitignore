@@ -13,3 +13,6 @@ calibration.json
 
 # Journaux du SDK Orbbec
 Log/
+
+# Signes enregistrés sur le miroir (mode langue des signes)
+signs/

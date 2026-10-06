@@ -1,4 +1,6 @@
 import { CalibrationPanel } from "./calibration";
+import { Menu, type MenuItem } from "./modes/menu";
+import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { Scene } from "./scene";
 import { EXPRESSIONS, type Expression, type TaskKind } from "./vision/protocol";
@@ -21,6 +23,13 @@ const hudGpu = $("hud-gpu");
 const hudTask: Record<TaskKind, HTMLElement> = { pose: $("hud-pose"), hands: $("hud-hands"), face: $("hud-face") };
 const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
+const hudMode = $("hud-mode");
+
+// Icônes du menu (24×24, trait).
+const ICON_SKELETON = `<svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M6 9.5l6-2 6 2M8 21l4-7 4 7"/></svg>`;
+const ICON_HAND = `<svg viewBox="0 0 24 24"><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-6.5a1.5 1.5 0 0 1 3 0V11m0-5a1.5 1.5 0 0 1 3 0v8a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2L3.6 15a1.6 1.6 0 0 1 2.4-2.1L8 15"/></svg>`;
+const ICON_CLOSE = `<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
 const LEAD_KEY = "dopplor.predictionMs";
@@ -88,26 +97,53 @@ async function main(): Promise<void> {
   setStatus("");
   const calibration = new CalibrationPanel((data) => source.setCalibration?.(data));
 
+  // Modes : le squelette (principal) et la langue des signes, choisis dans un menu ouvert d'un
+  // geste (main ouverte levée) ou avec la touche M.
+  const ghost = new Scene(); // double doré du mode langue des signes
+  const signs = new SignLanguageMode(scene, ghost, () => source.frameSize(), source.apiBase?.() ?? null, () => renderer.visibleArea());
+  let mode = "skeleton";
+  const setMode = async (id: string) => {
+    if (id === mode || !(id in MODE_NAMES)) return;
+    if (mode === "signs") signs.exit();
+    mode = id;
+    menu.setCurrent(mode);
+    if (mode === "signs") await signs.enter();
+  };
+  const items: MenuItem[] = [
+    { id: "skeleton", label: "Squelette", icon: ICON_SKELETON },
+    { id: "signs", label: "Langue des signes", icon: ICON_HAND },
+    { id: "close", label: "Fermer", icon: ICON_CLOSE },
+  ];
+  const menu = new Menu(items, (x, y) => renderer.toScreen(x, y), (id) => void setMode(id));
+  menu.setCurrent(mode);
+  setInterval(() => {
+    const now = performance.now();
+    menu.update(scene, now);
+    signs.update(now);
+  }, 33);
+
   // Rendu : découplé de l'inférence. Avec la prédiction, les points avancent à chaque
   // rafraîchissement de l'écran tant que quelqu'un est suivi ; sinon on ne redessine que quand
   // la scène change.
   let lead = loadLead();
   let drawnVersion = -1;
+  let drawnGhost = -1;
   let lastDraw = 0;
   let draws = 0;
   let latency = 0;
   const draw = (now: number) => {
-    const fading = scene.prune(now);
+    const fading = scene.prune(now) || ghost.prune(now);
     const predicting = lead > 0 && !scene.empty;
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
-    if ((predicting && due) || fading || scene.version !== drawnVersion) {
+    if ((predicting && due) || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
       scene.extrapolate(now, lead);
-      renderer.render(scene, now, w, h, source.space?.() ?? "camera");
+      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost]);
       drawnVersion = scene.version;
+      drawnGhost = ghost.version;
       draws++;
       // Latence capture → image dessinée (hors affichage de l'écran lui-même).
       const l = source.latency();
@@ -133,6 +169,7 @@ async function main(): Promise<void> {
     hudRender.textContent = `${draws * 2} img/s · ${w}×${h}`;
     hudLatency.textContent = latency ? `${Math.round(latency)} ms capture → rendu` : "–";
     hudPrediction.textContent = lead > 0 ? `${lead} ms d'avance` : "désactivée";
+    hudMode.textContent = MODE_NAMES[mode];
     hudGpu.textContent = source.gpu() || "…";
     hudGpu.classList.toggle("warn", /Radeon\(TM\) Graphics|Intel|SwiftShader|llvmpipe|Basic Render|^CPU$/i.test(source.gpu()));
     draws = 0;
@@ -159,6 +196,14 @@ async function main(): Promise<void> {
       if (e.key === "Escape") (e.target as HTMLInputElement).blur();
       return;
     }
+    if (mode === "signs" && signs.onKey(e)) return;
+    // Menu ouvert : 1, 2, 3… choisissent un mode au clavier.
+    const pick = menu.open ? items[Number(e.key) - 1] : undefined;
+    if (pick) {
+      menu.toggle();
+      await setMode(pick.id);
+      return;
+    }
     switch (e.key.toLowerCase()) {
       case "c":
         document.body.classList.toggle("black");
@@ -183,6 +228,13 @@ async function main(): Promise<void> {
         break;
       case "h":
         hud.classList.toggle("hidden");
+        break;
+      case "m":
+        menu.toggle();
+        break;
+      case "escape":
+        if (menu.open) menu.toggle();
+        else await setMode("skeleton");
         break;
       case "k":
         calibration.toggle();

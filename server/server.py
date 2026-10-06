@@ -212,6 +212,38 @@ def main() -> None:
     async def info(_: web.Request) -> web.Response:
         return web.Response(text=hello(), content_type="application/json")
 
+    # Signes enregistrés (mode langue des signes) : un fichier JSON par signe.
+    signs_dir = ROOT / "signs"
+    signs_dir.mkdir(exist_ok=True)
+
+    def sign_path(sign_id: str) -> Path:
+        safe = "".join(c for c in sign_id if c.isalnum() or c in "-_")[:80]
+        if not safe:
+            raise web.HTTPBadRequest(text="identifiant de signe invalide")
+        return signs_dir / f"{safe}.json"
+
+    async def list_signs(_: web.Request) -> web.Response:
+        signs = []
+        for f in sorted(signs_dir.glob("*.json")):
+            try:
+                signs.append(json.loads(f.read_text(encoding="utf-8")))
+            except ValueError:
+                log.warning("signe illisible : %s", f.name)
+        return web.json_response(signs)
+
+    async def save_sign(request: web.Request) -> web.Response:
+        sign = await request.json()
+        if not isinstance(sign, dict) or not sign.get("id") or not sign.get("label") or not isinstance(sign.get("frames"), list):
+            raise web.HTTPBadRequest(text="signe incomplet")
+        sign_path(sign["id"]).write_text(json.dumps(sign, ensure_ascii=False), encoding="utf-8")
+        log.info("signe enregistré : %s (%d images)", sign["label"], len(sign["frames"]))
+        return web.json_response({"ok": True})
+
+    async def delete_sign(request: web.Request) -> web.Response:
+        path = sign_path(request.match_info["id"])
+        path.unlink(missing_ok=True)
+        return web.json_response({"ok": True})
+
     web_dir = Path(args.web)
 
     async def index(_: web.Request) -> web.StreamResponse:
@@ -231,9 +263,24 @@ def main() -> None:
         threading.Thread(target=preview_loop, args=(source, hub), name="preview", daemon=True).start()
         app["stats"] = asyncio.create_task(stats_loop(app))
 
-    app = web.Application()
+    @web.middleware
+    async def cors(request: web.Request, handler):
+        # Développement : la page peut venir du serveur Vite (autre port) et appeler l'API.
+        if request.method == "OPTIONS":
+            response = web.Response()
+        else:
+            response = await handler(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
+
+    app = web.Application(middlewares=[cors])
     app.router.add_get("/ws", websocket)
     app.router.add_get("/api/info", info)
+    app.router.add_get("/api/signs", list_signs)
+    app.router.add_post("/api/signs", save_sign)
+    app.router.add_delete("/api/signs/{id}", delete_sign)
     app.router.add_get("/", index)
     if web_dir.exists():
         app.router.add_static("/", web_dir)

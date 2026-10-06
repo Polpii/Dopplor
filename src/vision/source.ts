@@ -34,4 +34,6 @@ export interface VisionSource {
   /** Où l'œil devrait voir son propre reflet (écran 0–1). */
   eye?(): [number, number] | null;
   setCalibration?(data: Partial<CalibrationData>): void;
+  /** Adresse HTTP du serveur Python (stockage des signes), si la source en a un. */
+  apiBase?(): string;
 }

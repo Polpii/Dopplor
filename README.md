@@ -34,6 +34,15 @@ A few things that took some trial and error:
 
 **Rendering** is plain WebGL2, no engine. Every bone is an instanced quad shaded with a distance field. Everything is drawn into an HDR buffer, then bloomed with a mip chain and tone mapped. The background is clamped to true black, because on a one-way mirror even a faint grey haze shows up.
 
+## Modes
+
+Raise an open hand above your shoulder and hold it for a moment: a ring fills around the hand and the mode menu opens. Your index finger becomes the cursor; rest it on a mode to pick it (`M` opens the menu from the keyboard).
+
+- **Skeleton**: the default, body + hands + face in neon.
+- **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Do another known sign and the mirror tells you which.
+
+There's no public model for French Sign Language, and I didn't want to make signs up, so signs are recorded: someone who knows LSF presses `R`, signs once in front of the mirror and names it. The recording (upper body and both hands over time) is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. On the mirror, signs are stored by the Python server in `signs/`.
+
 ## Lining up with the reflection
 
 A camera image and a reflection don't line up: your reflection sits behind the glass, as far back as you are in front, and where you see it depends on where your eyes are. So the overlay has to be drawn where the line from your eye to your reflection crosses the glass. That needs three things in 3D:
@@ -89,6 +98,8 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
 | `↑` `↓` | more / less prediction (latency compensation) |
+| `M` | mode menu (or raise an open hand) |
+| `R` `←` `→` `Suppr` | sign language mode: record a sign, previous / next, delete |
 | `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
 | `H` | hide the debug panel |
@@ -109,6 +120,11 @@ server/
 src/
   main.ts            picks the source (Python server or browser), render loop, debug panel
   calibration.ts     calibration panel
+  modes/
+    menu.ts          mode menu driven by the hand
+    gestures.ts      open / raised hand, fingertip cursor
+    sign-language.ts sign language mode (learning, golden double, recording)
+    signs.ts         sign recording, comparison (DTW) and storage
   scene.ts           tracking, smoothing, expressions
   vision/
     remote.ts        landmarks from the Python server

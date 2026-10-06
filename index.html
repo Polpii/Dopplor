@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="google" content="notranslate" />
+    <!-- Page déjà sombre : empêche les navigateurs de la « foncer » eux-mêmes (le noir deviendrait gris). -->
+    <meta name="color-scheme" content="dark" />
     <title>Dopplor</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/src/style.css" />
@@ -16,6 +18,7 @@
     <div id="status">Démarrage…</div>
 
     <aside id="hud">
+      <div class="row"><span>Mode</span><b id="hud-mode">–</b></div>
       <div class="row"><span>Fond</span><b id="hud-bg">–</b></div>
       <div class="row"><span>Source</span><b id="hud-source">–</b></div>
       <div class="row"><span>Caméra</span><b id="hud-camera">–</b></div>
@@ -28,6 +31,7 @@
       <div class="row"><span>Visage</span><b id="hud-face">–</b></div>
       <div class="row"><span>Expression</span><b id="hud-expression">–</b></div>
       <div class="keys">
+        <div><kbd>M</kbd> menu des modes (ou lève une main ouverte)</div>
         <div><kbd>C</kbd> écran noir / flux caméra</div>
         <div><kbd>1</kbd> corps · <kbd>2</kbd> mains · <kbd>3</kbd> visage</div>
         <div><kbd>P</kbd> modèle corps lite / full / heavy</div>

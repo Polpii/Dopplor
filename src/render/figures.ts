@@ -10,11 +10,14 @@ interface Palette {
   center: RGB;
 }
 
-// Une palette par personne détectée.
+// Une palette par personne détectée, plus une dorée pour le double qui montre les signes.
 const PALETTES: Palette[] = [
   { left: hexToRgb("#5ef2ff"), right: hexToRgb("#a78bfa"), center: hexToRgb("#cfe8ff") },
   { left: hexToRgb("#ff7ab6"), right: hexToRgb("#ffb86b"), center: hexToRgb("#ffe0ec") },
+  { left: hexToRgb("#ffd36b"), right: hexToRgb("#ffb347"), center: hexToRgb("#fff1c9") },
 ];
+/** Couleur du double doré (mode langue des signes). */
+export const GHOST_COLOR = 2;
 
 // Indices MediaPipe Pose (33 points). [a, b, côté, épaisseur relative]
 type BodySide = Side | "center";

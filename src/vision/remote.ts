@@ -195,6 +195,10 @@ export class RemoteSource implements VisionSource {
     return this.eyeOnGlass;
   }
 
+  apiBase(): string {
+    return this.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+  }
+
   setCalibration(data: Partial<CalibrationData>): void {
     this.send({ cmd: "calibration", data });
   }
