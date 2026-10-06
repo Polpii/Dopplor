@@ -41,9 +41,13 @@ To open the mode menu, bring a closed hand up, then open it, a bit like the Holo
 The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same bloom); the first version used CSS glows, which got very slow on a 4K screen.
 
 - **Skeleton**: the default, body + hands + face in neon.
-- **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Do another known sign and the mirror tells you which.
+- **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
 
-There's no public model for French Sign Language, and I didn't want to make signs up, so signs are recorded: someone who knows LSF presses `R`, signs once in front of the mirror and names it. The recording (upper body and both hands over time) is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. On the mirror, signs are stored by the Python server in `signs/`.
+There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). That gives about 110 words in `data/lsf/`, starting with bonjour, merci, au revoir. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
+
+The movement is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. It also accepts the sign done with the other hand, and it wants the movement, not just the right pose. The threshold was tuned on simulated imitators: other body proportions, other speed, sloppier hands. That's a starting point; it still needs tuning with real people.
+
+You can add your own signs: someone who knows LSF presses `R`, signs once in front of the mirror and names it. They're stored by the Python server in `signs/`.
 
 ## Lining up with the reflection
 

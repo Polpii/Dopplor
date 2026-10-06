@@ -24,11 +24,20 @@ export interface Sign {
   width: number;
   height: number;
   frames: SignFrame[];
+  /** Signe importé (bibliothèque LSF) : qui le signe, et sous quelle licence. */
+  source?: { author: string; license: string; licenseUrl?: string; url: string };
+  /** Fourni avec Dopplor (data/lsf) : ne peut pas être effacé. */
+  bundled?: boolean;
 }
 
 const UPPER_BODY = 25;
 const SHOULDER_L = 11;
 const SHOULDER_R = 12;
+/**
+ * Une main plus bas que ça (en largeurs d'épaules sous les épaules) est au repos : elle ne fait
+ * pas partie du signe. Même valeur que REST_BELOW dans scripts/import_lsf.py.
+ */
+const REST_BELOW = 1.35;
 /** Cadence des signes enregistrés et comparés (images par seconde). */
 export const SIGN_FPS = 15;
 
@@ -58,7 +67,7 @@ export function captureFrame(scene: Scene, t: number): SignFrame | null {
  * (points par rapport au poignet, en tailles de paume). Indépendant de la taille de la personne
  * et de sa place dans l'image.
  */
-interface Features {
+export interface Features {
   hands: Partial<Record<Side, { place: [number, number]; shape: Float32Array }>>;
 }
 
@@ -73,6 +82,8 @@ export function features(f: SignFrame, width: number, height: number): Features 
     const pts = f.hands[side];
     if (!pts) continue;
     const wrist = px(pts, 0);
+    const place: [number, number] = [(wrist[0] - center[0]) / scale, (wrist[1] - center[1]) / scale];
+    if (place[1] > REST_BELOW) continue;
     const mid = px(pts, 9);
     const palm = Math.max(Math.hypot(mid[0] - wrist[0], mid[1] - wrist[1]), 1);
     const shape = new Float32Array(40);
@@ -81,13 +92,31 @@ export function features(f: SignFrame, width: number, height: number): Features 
       shape[(i - 1) * 2] = (p[0] - wrist[0]) / palm;
       shape[(i - 1) * 2 + 1] = (p[1] - wrist[1]) / palm;
     }
-    out.hands[side] = { place: [(wrist[0] - center[0]) / scale, (wrist[1] - center[1]) / scale], shape };
+    out.hands[side] = { place, shape };
   }
   return out;
 }
 
+/** Le même signe fait de l'autre main (gauchers, vidéo en miroir). */
+export function mirrored(f: Features): Features {
+  const out: Features = { hands: {} };
+  for (const side of ["left", "right"] as const) {
+    const h = f.hands[side];
+    if (!h) continue;
+    const shape = h.shape.slice();
+    for (let i = 0; i < shape.length; i += 2) shape[i] = -shape[i];
+    out.hands[side === "left" ? "right" : "left"] = { place: [-h.place[0], h.place[1]], shape };
+  }
+  return out;
+}
+
+// Poids réglés sur la bibliothèque LSF (172 signes) avec des imitateurs simulés : autre
+// morphologie, autre vitesse, décalés, forme des mains approximative, parfois de l'autre main.
+
 /** Une main présente d'un côté et absente de l'autre coûte autant qu'une main très différente. */
-const MISSING_HAND = 1.2;
+const MISSING_HAND = 1.0;
+const PLACE_WEIGHT = 0.5;
+const SHAPE_WEIGHT = 0.4;
 
 function frameDistance(a: Features, b: Features): number {
   let d = 0;
@@ -102,7 +131,7 @@ function frameDistance(a: Features, b: Features): number {
     const place = Math.hypot(ha.place[0] - hb.place[0], ha.place[1] - hb.place[1]);
     let shape = 0;
     for (let i = 0; i < 40; i += 2) shape += Math.hypot(ha.shape[i] - hb.shape[i], ha.shape[i + 1] - hb.shape[i + 1]);
-    d += place + (shape / 20) * 0.8;
+    d += PLACE_WEIGHT * place + SHAPE_WEIGHT * (shape / 20);
   }
   return d;
 }
@@ -129,11 +158,43 @@ export function signDistance(template: Features[], live: Features[]): number {
   return best / n;
 }
 
-/** Distance → ressemblance de 0 à 1 (1 = identique). */
-export const similarity = (distance: number) => Math.exp(-distance / 0.55);
+/**
+ * Distance en dessous de laquelle le signe est réussi. Imitateurs simulés : 99 % de réussite
+ * pour une imitation soignée, 68 à 88 % pour une approximative ; un autre signe passe 1 à 5 %.
+ */
+export const MATCH_DISTANCE = 0.55;
+/** Distance typique d'un signe sans rapport (médiane des autres signes). */
+const UNRELATED_DISTANCE = 1.2;
+
+/** Distance → progression de la jauge, de 0 (sans rapport) à 1 (signe réussi). */
+export const progress = (distance: number) =>
+  Math.min(1, Math.max(0, (UNRELATED_DISTANCE - distance) / (UNRELATED_DISTANCE - MATCH_DISTANCE)));
+
+/**
+ * Chemin parcouru par la main qui bouge le plus (en largeurs d'épaules). Une pose tenue au bon
+ * endroit ne suffit pas : il faut aussi faire le mouvement.
+ */
+export function travel(frames: Features[]): number {
+  let best = 0;
+  for (const side of ["left", "right"] as const) {
+    let sum = 0;
+    for (let i = 1; i < frames.length; i++) {
+      const a = frames[i - 1].hands[side];
+      const b = frames[i].hands[side];
+      if (a && b) sum += Math.hypot(b.place[0] - a.place[0], b.place[1] - a.place[1]);
+    }
+    best = Math.max(best, sum);
+  }
+  return best;
+}
+
+/** Part minimale du mouvement du modèle à refaire (imitateurs simulés : une pose immobile passe 10 % au lieu de 25 %). */
+export const MIN_TRAVEL = 0.5;
+
+export const hasHands = (f: Features) => f.hands.left !== undefined || f.hands.right !== undefined;
 
 export function signFeatures(sign: Sign): Features[] {
-  return sign.frames.filter((f) => Object.keys(f.hands).length > 0).map((f) => features(f, sign.width, sign.height));
+  return sign.frames.map((f) => features(f, sign.width, sign.height)).filter(hasHands);
 }
 
 // --- Stockage --------------------------------------------------------------------------------

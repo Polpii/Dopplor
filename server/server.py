@@ -212,9 +212,29 @@ def main() -> None:
     async def info(_: web.Request) -> web.Response:
         return web.Response(text=hello(), content_type="application/json")
 
-    # Signes enregistrés (mode langue des signes) : un fichier JSON par signe.
+    # Signes (mode langue des signes) : un fichier JSON par signe. data/lsf : la bibliothèque
+    # fournie avec Dopplor (scripts/import_lsf.py), en lecture seule ; signs/ : ceux enregistrés
+    # sur place.
     signs_dir = ROOT / "signs"
     signs_dir.mkdir(exist_ok=True)
+    bundled_dir = ROOT / "data" / "lsf"
+
+    def read_signs(folder: Path, bundled: bool) -> list[dict]:
+        out = []
+        for f in sorted(folder.glob("*.json")):
+            try:
+                sign = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                log.warning("signe illisible : %s", f.name)
+                continue
+            if bundled:
+                sign["bundled"] = True
+            out.append(sign)
+        return out
+
+    bundled_signs = read_signs(bundled_dir, True)
+    if bundled_signs:
+        log.info("bibliothèque LSF : %d signes", len(bundled_signs))
 
     def sign_path(sign_id: str) -> Path:
         safe = "".join(c for c in sign_id if c.isalnum() or c in "-_")[:80]
@@ -223,13 +243,7 @@ def main() -> None:
         return signs_dir / f"{safe}.json"
 
     async def list_signs(_: web.Request) -> web.Response:
-        signs = []
-        for f in sorted(signs_dir.glob("*.json")):
-            try:
-                signs.append(json.loads(f.read_text(encoding="utf-8")))
-            except ValueError:
-                log.warning("signe illisible : %s", f.name)
-        return web.json_response(signs)
+        return web.json_response(bundled_signs + read_signs(signs_dir, False))
 
     async def save_sign(request: web.Request) -> web.Response:
         sign = await request.json()

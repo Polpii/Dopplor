@@ -347,6 +347,24 @@ body.calibrating {
   background: #ffd36b;
   box-shadow: 0 0 1.5vmin #ffd36b;
 }
+/* Beaucoup de signes : « 3 / 120 » plutôt qu'une rangée de points */
+.sign-dots.count {
+  font: 500 1.8vmin/1 ui-monospace, "Cascadia Code", Consolas, monospace;
+  letter-spacing: 0.1em;
+  color: rgba(255, 211, 107, 0.6);
+}
+
+/* Auteur et licence du signe montré (bibliothèque Lingua Libre, CC BY-SA) */
+.sign-credit {
+  position: absolute;
+  bottom: 5.5vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font: 400 1.4vmin/1 ui-sans-serif, system-ui, sans-serif;
+  color: rgba(255, 241, 201, 0.35);
+  letter-spacing: 0.06em;
+}
 
 /* Messages (« Bravo ! », signe reconnu) */
 .sign-toast {
