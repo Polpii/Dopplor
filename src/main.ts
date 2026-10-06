@@ -28,6 +28,8 @@ const LEAD_KEY = "dopplor.predictionMs";
 // rendu) à ~0. Plus haut, on compense aussi la caméra et l'écran, au prix de dépassements.
 const LEAD_DEFAULT = 80;
 const LEAD_STEP = 10;
+/** Plafond du rendu continu (prédiction) quand l'écran n'impose plus de synchronisation. */
+const MAX_RENDER_FPS = 144;
 const LEAD_MAX = 200;
 function loadLead(): number {
   try {
@@ -84,12 +86,18 @@ async function main(): Promise<void> {
   // la scène change.
   let lead = loadLead();
   let drawnVersion = -1;
+  let lastDraw = 0;
   let draws = 0;
   let latency = 0;
   const onAnimationFrame = (now: number) => {
     const fading = scene.prune(now);
     const predicting = lead > 0 && !scene.empty;
-    if (predicting || fading || scene.version !== drawnVersion) {
+    // Sans vsync (kiosque), requestAnimationFrame n'est plus limité à 60 Hz : on plafonne le rendu
+    // « de prédiction » pour ne pas voler la carte graphique à l'inférence. Un nouveau résultat,
+    // lui, est dessiné tout de suite.
+    const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
+    if ((predicting && due) || fading || scene.version !== drawnVersion) {
+      lastDraw = now;
       const [w, h] = source.frameSize();
       scene.extrapolate(now, lead);
       renderer.render(scene, now, w, h, source.space?.() ?? "camera");
