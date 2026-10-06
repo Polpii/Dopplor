@@ -35,6 +35,8 @@ EXPRESSIONS = ("smile", "jawOpen", "blinkLeft", "blinkRight", "browUp", "browDow
 CROP_SIZE = 256
 #: Identité du corps suivi. Un miroir = une personne ; les zones s'appellent "p0/left", "p0/face"…
 BODY_KEY = "p0"
+#: Corps à l'image : par défaut on en détecte plusieurs pour choisir la bonne personne.
+TORSO = (11, 12, 23, 24)
 
 # Indices MediaPipe Pose.
 NOSE, EYES, EARS, MOUTH, SHOULDERS = 0, (2, 5), (7, 8), (9, 10), (11, 12)
@@ -276,7 +278,11 @@ def face_rois(pose: np.ndarray, w: int, h: int, speed: np.ndarray) -> list[Roi]:
 class Pipeline:
     """Boucle d'inférence : dernière image → corps → mains → visage, chaque résultat publié aussitôt."""
 
-    def __init__(self, source: Source, models: Path, pose_model: str, prefer_gpu: bool, publish: Callable[[Result], None]) -> None:
+    def __init__(
+        self, source: Source, models: Path, pose_model: str, prefer_gpu: bool, publish: Callable[[Result], None], max_people: int = 3
+    ) -> None:
+        self.max_people = max(1, max_people)
+        self._focus: np.ndarray | None = None  # centre du torse de la personne suivie
         self.source = source
         self.models = models
         self.prefer_gpu = prefer_gpu
@@ -287,7 +293,7 @@ class Pipeline:
         self.zoomed = {k: False for k in KINDS}
         self._pending_model: str | None = None
         self.tasks = {
-            "pose": Task("pose", models / f"pose_landmarker_{pose_model}.task", prefer_gpu, 1),
+            "pose": Task("pose", models / f"pose_landmarker_{pose_model}.task", prefer_gpu, self.max_people),
             "hands": Task("hands", models / "hand_landmarker.task", prefer_gpu, 2),
             "face": Task("face", models / "face_landmarker.task", prefer_gpu, 1),
         }
@@ -314,7 +320,7 @@ class Pipeline:
         while True:
             if self._pending_model:
                 model, self._pending_model = self._pending_model, None
-                self.tasks["pose"].load(self.models / f"pose_landmarker_{model}.task", self.prefer_gpu, 1)
+                self.tasks["pose"].load(self.models / f"pose_landmarker_{model}.task", self.prefer_gpu, self.max_people)
                 self.pose_model = model
             frame = self.source.wait(last_id)
             if frame is None:
@@ -328,6 +334,8 @@ class Pipeline:
     def _run(self, kind: str, frame: Frame, rois: list[Roi] | None) -> list[Detection]:
         t0 = time.perf_counter()
         dets = self.tasks[kind].detect(frame, rois)
+        if kind == "pose":
+            dets = self._pick_person(dets)
         infer = (time.perf_counter() - t0) * 1000
         self.stats[kind].add(infer)
         self.zoomed[kind] = rois is not None
@@ -335,6 +343,35 @@ class Pipeline:
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
         self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye))
         return dets  # coordonnées image : servent aux zones de zoom
+
+    def _pick_person(self, dets: list[Detection]) -> list[Detection]:
+        """Garde une seule personne : la plus proche (la plus grande à l'image) et la plus au
+        centre, avec un bonus pour celle qu'on suit déjà, pour ne pas sauter d'une personne à
+        l'autre quand deux se valent."""
+        if len(dets) <= 1:
+            if dets:
+                self._focus = self._torso_center(dets[0].points)
+            return dets
+
+        def score(d: Detection) -> float:
+            p = d.points
+            center = self._torso_center(p)
+            # Taille : largeur d'épaules ou longueur du buste (la plus grande, pour gérer le profil).
+            shoulders = float(np.hypot(*(p[11, :2] - p[12, :2])))
+            torso = float(np.hypot(*((p[11, :2] + p[12, :2]) / 2 - (p[23, :2] + p[24, :2]) / 2)))
+            closeness = min(2.0, max(shoulders, torso) / 0.35)  # plafond haut : la proximité prime
+            centrality = 1.0 - min(1.0, abs(center[0] - 0.5) * 2)
+            stay = 1.0 if self._focus is not None and np.hypot(*(center - self._focus)) < 0.12 else 0.0
+            return closeness + 0.8 * centrality + 0.4 * stay
+
+        best = max(dets, key=score)
+        self._focus = self._torso_center(best.points)
+        return [best]
+
+    @staticmethod
+    def _torso_center(p: np.ndarray) -> np.ndarray:
+        visible = [i for i in TORSO if p[i, 3] > 0.5] or [11, 12]
+        return p[visible, :2].mean(axis=0)
 
     def _depth_of(self, frame: Frame) -> np.ndarray | None:
         """Profondeur de l'image (attendue une seule fois par image, partagée par les 3 modèles)."""
