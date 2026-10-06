@@ -1,14 +1,17 @@
 // Menu des modes, piloté à la main et dessiné par le moteur néon (pas d'effets CSS coûteux).
 //
-//   Ouvrir : monter la main fermée puis l'ouvrir (voir BloomGesture), ou la touche M.
-//   Choisir : garder l'index sur un mode (~0,7 s) ou pincer pouce + index.
-//   Fermer : fermer le poing, baisser la main, ou ne rien faire quelques secondes.
+//   Ouvrir : lever la main ouverte, paume vers le miroir, et la tenir ~1 s (voir PalmHold) ;
+//            un anneau se remplit autour de la paume, le menu éclot quand il est plein. Touche M.
+//   Choisir : garder l'index sur un mode (~0,8 s) ou pincer pouce + index.
+//   Fermer : fermer le poing et le garder fermé (le menu se replie dans la main), ou « Fermer ».
 //
-// Le menu s'ouvre en arc au-dessus de la main, à portée de doigt. Le survol a une marge d'entrée
-// et une marge de sortie différentes (pas de clignotement), et le curseur est légèrement aimanté.
+// Le menu ne disparaît pas tout seul quand on baisse la main ou qu'elle sort du champ : il reste
+// jusqu'à ce qu'on le ferme. Seule exception, plus personne devant le miroir pendant un moment.
+// Les boutons restent à leur place (cibles fixes), le survol a une marge d'entrée et une marge de
+// sortie différentes (pas de clignotement), et le curseur est légèrement aimanté.
 import type { Scene } from "../scene";
 import { hexToRgb, type RGB, type SegmentBuffer } from "../render/segments";
-import { BloomGesture, handStates, type HandState } from "./gestures";
+import { PalmHold, handStates, type HandState } from "./gestures";
 
 export interface MenuItem {
   id: string;
@@ -20,11 +23,15 @@ export interface MenuItem {
 /** Polyligne [x0, y0, x1, y1, …] ou cercle { c: [x, y], r }. */
 export type Stroke = number[] | { c: [number, number]; r: number };
 
-const DWELL_MS = 700;
-const OPEN_MS = 280;
-const IDLE_CLOSE_MS = 8000;
-const NO_HAND_CLOSE_MS = 1500;
-const FIST_CLOSE_MS = 350;
+const DWELL_MS = 800;
+const OPEN_MS = 420;
+/** Poing tenu pour refermer, et délai après l'ouverture avant que le poing compte. */
+const FOLD_MS = 600;
+const FOLD_GRACE_MS = 700;
+/** Plus personne devant le miroir : on range le menu. */
+const AWAY_CLOSE_MS = 6000;
+/** La main qui a ouvert le menu a disparu : une autre main peut prendre la main. */
+const HAND_HANDOVER_MS = 1000;
 /** Taille des boutons et rayon de l'arc, en fraction du plus petit côté de l'écran. */
 const ITEM_RADIUS = 0.038;
 const ARC_RADIUS = 0.13;
@@ -46,21 +53,29 @@ interface Placed {
 }
 
 export class Menu {
-  private bloom = new BloomGesture();
+  private summon = new PalmHold();
+  /** Appel en cours (anneau autour de la paume), en px d'écran. */
+  private summoning: { x: number; y: number; r: number; progress: number } | null = null;
   private isOpen = false;
   private openedAt = 0;
   private closedAt = -Infinity;
+  /** Point d'où le menu éclot (la paume), et où il se replie. */
+  private origin: [number, number] = [0, 0];
   private placed: Placed[] = [];
   private labels: HTMLElement;
   private hand: string | null = null;
+  private handSeenAt = 0;
+  private personSeenAt = 0;
   private cursor: [number, number] | null = null;
+  /** Le survol ne compte qu'une fois le doigt sorti des boutons (sinon l'index, déjà levé à
+   * l'ouverture, choisirait le bouton du milieu sans le vouloir). */
+  private armed = false;
   private hovered: Placed | null = null;
   private hoverSince = 0;
-  private lastActivity = 0;
-  private lastHandAt = 0;
-  private fistSince = 0;
+  private fold = 0;
+  private lastTrack = 0;
   private pinching = false;
-  private flash: { x: number; y: number; at: number } | null = null;
+  private flash: { x: number; y: number; at: number; kind: "select" | "close" } | null = null;
   private current = "";
 
   constructor(
@@ -79,9 +94,9 @@ export class Menu {
     return this.isOpen;
   }
 
-  /** Vrai tant que le menu doit être redessiné (ouvert ou en animation). */
+  /** Vrai tant que le menu doit être redessiné (ouvert, appel en cours ou animation). */
   get animating(): boolean {
-    return this.isOpen || (this.flash !== null && performance.now() - this.flash.at < 500);
+    return this.isOpen || this.summoning !== null || (this.flash !== null && performance.now() - this.flash.at < 600);
   }
 
   setCurrent(id: string): void {
@@ -93,31 +108,46 @@ export class Menu {
     if (this.isOpen) this.close(now);
     else {
       const [sw, sh] = this.screen();
-      this.show(now, sw / 2, sh * 0.45, null);
+      this.show(now, sw / 2, sh * 0.45, 0, null);
     }
   }
 
   update(scene: Scene, now: number): void {
     const [w, h] = this.frame();
     const hands = handStates(scene, now, w, h);
-    if (hands.length) this.lastHandAt = now;
+    for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
-      const { triggered } = this.bloom.update(hands, now);
-      if (triggered && now - this.closedAt > 600) {
+      const { hand, progress, triggered } = this.summon.update(hands, now);
+      if (triggered && now - this.closedAt > 800) {
         const [x, y] = this.toScreen(...triggered.palm);
-        this.show(now, x, y, triggered.track.key);
-      }
+        this.summoning = null;
+        this.show(now, x, y, this.palmOnScreen(triggered), triggered.track.key);
+      } else if (hand && progress > 0.2 && now - this.closedAt > 800) {
+        const [x, y] = this.toScreen(...hand.palm);
+        // L'anneau part de zéro une fois l'intention claire, et se remplit jusqu'à l'ouverture.
+        this.summoning = { x, y, r: this.palmOnScreen(hand) * 1.25, progress: (progress - 0.2) / 0.8 };
+      } else this.summoning = null;
       return;
     }
     this.track(hands, now);
   }
 
+  /** Taille de la paume à l'écran (px CSS). */
+  private palmOnScreen(hand: HandState): number {
+    const [w] = this.frame();
+    const a = this.toScreen(...hand.palm);
+    const b = this.toScreen(hand.palm[0] + 0.01, hand.palm[1]);
+    const unit = Math.min(...this.screen());
+    return Math.max(unit * 0.03, (hand.palmSize * Math.hypot(b[0] - a[0], b[1] - a[1])) / (0.01 * w));
+  }
+
   // --- Ouverture / fermeture ------------------------------------------------------------------
 
-  private show(now: number, x: number, y: number, hand: string | null): void {
+  private show(now: number, x: number, y: number, palm: number, hand: string | null): void {
     const [sw, sh] = this.screen();
     const unit = Math.min(sw, sh);
-    const r = ARC_RADIUS * unit;
+    // L'arc passe au-dessus des doigts levés : le bout de l'index ne doit pas tomber sur un bouton.
+    const r = Math.max(ARC_RADIUS * unit, palm * 3);
     const margin = (ITEM_RADIUS + 0.04) * unit;
     // Arc au-dessus de la main, gardé dans l'écran.
     const cx = Math.min(sw - r * Math.sin(ARC_SPREAD) - margin, Math.max(r * Math.sin(ARC_SPREAD) + margin, x));
@@ -131,17 +161,22 @@ export class Menu {
       const label = document.createElement("div");
       label.className = "menu-label";
       label.textContent = item.label;
+      label.style.opacity = "0";
       label.style.transform = `translate(${px}px, ${py - (ITEM_RADIUS + 0.025) * unit}px) translate(-50%, -100%)`;
       this.labels.append(label);
       return { item, x: px, y: py, label };
     });
     this.isOpen = true;
     this.openedAt = now;
-    this.lastActivity = now;
+    this.origin = [x, y];
     this.hand = hand;
+    this.handSeenAt = now;
+    this.personSeenAt = now;
+    this.armed = false;
     this.hovered = null;
     this.cursor = null;
-    this.fistSince = 0;
+    this.fold = 0;
+    this.lastTrack = now;
     this.pinching = true; // un pincement déjà en cours ne doit pas valider tout de suite
     this.labels.classList.add("visible");
   }
@@ -151,42 +186,60 @@ export class Menu {
     this.closedAt = now;
     this.hovered = null;
     this.cursor = null;
+    this.fold = 0;
+    this.summon.reset();
     this.labels.classList.remove("visible");
   }
 
   // --- Pointage ---------------------------------------------------------------------------------
 
   private track(hands: HandState[], now: number): void {
-    const hand = hands.find((h) => h.track.key === this.hand) ?? (this.hand === null ? hands[0] : undefined);
+    const dt = Math.min(100, now - this.lastTrack);
+    this.lastTrack = now;
+    if (now - this.personSeenAt > AWAY_CLOSE_MS) return this.close(now);
+
+    // La main qui a ouvert le menu le pilote ; si elle a disparu un moment, n'importe quelle main.
+    let hand = hands.find((h) => h.track.key === this.hand);
+    if (!hand && (this.hand === null || now - this.handSeenAt > HAND_HANDOVER_MS)) hand = hands[0];
     if (!hand) {
+      // Main baissée ou hors champ : le menu attend, sans curseur.
       this.cursor = null;
-      if (now - this.lastHandAt > NO_HAND_CLOSE_MS) this.close(now);
+      this.hovered = null;
+      this.fold = Math.max(0, this.fold - dt / 250);
       return;
     }
     this.hand = hand.track.key;
+    this.handSeenAt = now;
 
-    // Poing fermé un instant : on referme le menu.
-    if (hand.closed) {
-      this.fistSince ||= now;
-      if (now - this.fistSince > FIST_CLOSE_MS && now - this.openedAt > 500) return this.close(now);
-    } else this.fistSince = 0;
-    // Main baissée bien en dessous des épaules : on referme aussi.
-    if (hand.anchored && hand.height > 1.2) return this.close(now);
+    // Poing tenu : le menu se replie dans la main. Relâcher avant la fin l'annule.
+    if (hand.fist && now - this.openedAt > FOLD_GRACE_MS) this.fold = Math.min(1, this.fold + dt / FOLD_MS);
+    else this.fold = Math.max(0, this.fold - dt / 250);
+    if (this.fold >= 1) {
+      const [x, y] = this.toScreen(...hand.palm);
+      this.flash = { x, y, at: now, kind: "close" };
+      return this.close(now);
+    }
+    if (this.fold > 0) {
+      this.origin = this.toScreen(...hand.palm);
+      this.hovered = null;
+      this.cursor = null;
+      return;
+    }
 
     const [sw, sh] = this.screen();
-    const unit = Math.min(sw, sh);
+    const itemR = ITEM_RADIUS * Math.min(sw, sh);
     const raw = this.toScreen(...hand.index);
-    const itemR = ITEM_RADIUS * unit;
+    const d = (p: Placed) => Math.hypot(raw[0] - p.x, raw[1] - p.y);
+    if (!this.armed && this.placed.every((p) => d(p) > itemR * 1.8)) this.armed = true;
+    const ready = this.armed && now - this.openedAt > OPEN_MS;
 
     // Survol avec hystérésis : on entre à 1,3 rayon, on ne sort qu'à 1,8 rayon.
-    const d = (p: Placed) => Math.hypot(raw[0] - p.x, raw[1] - p.y);
     if (this.hovered && d(this.hovered) > itemR * 1.8) this.hovered = null;
-    if (!this.hovered) {
+    if (!this.hovered && ready) {
       const near = this.placed.reduce<Placed | null>((best, p) => (d(p) < itemR * 1.3 && (!best || d(p) < d(best)) ? p : best), null);
       if (near) {
         this.hovered = near;
         this.hoverSince = now;
-        this.lastActivity = now;
       }
     }
     // Curseur légèrement aimanté vers le bouton survolé.
@@ -196,12 +249,10 @@ export class Menu {
     this.pinching = hand.pinch;
     if (this.hovered && (now - this.hoverSince >= DWELL_MS || pinchStart)) {
       const chosen = this.hovered;
-      this.flash = { x: chosen.x, y: chosen.y, at: now };
+      this.flash = { x: chosen.x, y: chosen.y, at: now, kind: "select" };
       this.close(now);
       this.onSelect(chosen.item.id);
-      return;
     }
-    if (now - this.lastActivity > IDLE_CLOSE_MS) this.close(now);
   }
 
   // --- Dessin (segments néon, en px CSS) -----------------------------------------------------------
@@ -213,29 +264,49 @@ export class Menu {
     const width = Math.max(1.5, unit * 0.0025);
 
     if (this.flash) {
-      // Validation : un anneau doré qui s'élargit et s'éteint.
-      const t = (now - this.flash.at) / 500;
-      if (t < 1) ring(out, this.flash.x, this.flash.y, itemR * (1 + t * 1.2), 0, 1, width * 1.4, COLOR.progress, 1.6 * (1 - t));
-      else this.flash = null;
+      const t = (now - this.flash.at) / 600;
+      if (t >= 1) this.flash = null;
+      else if (this.flash.kind === "select") {
+        // Validation : un anneau doré qui s'élargit et s'éteint.
+        ring(out, this.flash.x, this.flash.y, itemR * (1 + t * 1.2), 0, 1, width * 1.4, COLOR.progress, 1.6 * (1 - t));
+      } else {
+        // Fermeture : un anneau qui se resserre dans le poing.
+        ring(out, this.flash.x, this.flash.y, itemR * 1.4 * (1 - easeOut(t)), 0, 1, width * 1.2, COLOR.idle, 1.2 * (1 - t));
+      }
+    }
+
+    if (this.summoning) {
+      // Appel : un cercle discret autour de la paume, et un arc qui se remplit.
+      const { x, y, r, progress } = this.summoning;
+      const fade = Math.min(1, progress * 5);
+      ring(out, x, y, r, 0, 1, width * 0.8, COLOR.idle, 0.35 * fade);
+      ring(out, x, y, r, 0, progress, width * 1.6, COLOR.cursor, 1.3 * fade);
     }
     if (!this.isOpen) return;
 
-    // Éclosion : les boutons sortent de la main, l'un après l'autre.
+    // Éclosion : les boutons sortent de la paume, l'un après l'autre. Repli : ils y retournent.
     const t = Math.min(1, (now - this.openedAt) / OPEN_MS);
+    const fold = easeIn(this.fold);
     this.placed.forEach((p, i) => {
-      const k = easeOut(Math.min(1, Math.max(0, t * 1.4 - i * 0.15)));
-      if (k <= 0) return;
+      const k = easeOut(Math.min(1, Math.max(0, t * 1.5 - i * 0.18))) * (1 - fold);
+      if (k <= 0.01) {
+        if (p.label.style.opacity !== "0") p.label.style.opacity = "0";
+        return;
+      }
+      const x = this.origin[0] + (p.x - this.origin[0]) * k;
+      const y = this.origin[1] + (p.y - this.origin[1]) * k;
       const hovered = p === this.hovered;
       const color = hovered ? COLOR.hover : p.item.id === this.current ? COLOR.current : COLOR.idle;
-      const r = itemR * (hovered ? 1.12 : 1) * k;
-      ring(out, p.x, p.y, r, 0, 1, width, color, hovered ? 1.3 : 0.75);
-      for (const s of p.item.icon) icon(out, s, p.x, p.y, r * 0.48, width * 0.9, color, hovered ? 1.4 : 0.9);
+      const r = itemR * (hovered ? 1.12 : 1) * (0.4 + 0.6 * k);
+      ring(out, x, y, r, 0, 1, width, color, hovered ? 1.3 : 0.75);
+      for (const s of p.item.icon) icon(out, s, x, y, r * 0.48, width * 0.9, color, hovered ? 1.4 : 0.9);
       if (hovered) {
         const progress = Math.min(1, (now - this.hoverSince) / DWELL_MS);
-        ring(out, p.x, p.y, r * 1.25, 0, progress, width * 1.6, COLOR.progress, 1.5);
+        ring(out, x, y, r * 1.25, 0, progress, width * 1.6, COLOR.progress, 1.5);
       }
-      const opacity = (k * (hovered ? 1 : 0.7)).toFixed(2);
-      if (p.label.style.opacity !== opacity) p.label.style.opacity = opacity; // écrire le DOM seulement si ça change
+      // Les noms n'apparaissent qu'une fois le bouton en place (écrire le DOM seulement si ça change).
+      const opacity = (Math.max(0, k * 2 - 1) * (hovered ? 1 : 0.7)).toFixed(2);
+      if (p.label.style.opacity !== opacity) p.label.style.opacity = opacity;
     });
     if (this.cursor) {
       out.dot(this.cursor[0], this.cursor[1], width * 4, COLOR.cursor, 1.6);
@@ -245,9 +316,11 @@ export class Menu {
 }
 
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
+const easeIn = (t: number) => t * t;
 
 /** Arc de cercle de `from` à `to` (fractions de tour, départ en haut, sens horaire). */
 function ring(out: SegmentBuffer, cx: number, cy: number, r: number, from: number, to: number, width: number, color: RGB, intensity: number): void {
+  if (intensity <= 0 || r <= 0 || to <= from) return;
   const steps = Math.max(2, Math.ceil(48 * (to - from)));
   for (let i = 0; i < steps; i++) {
     const a0 = (from + ((to - from) * i) / steps) * Math.PI * 2 - Math.PI / 2;

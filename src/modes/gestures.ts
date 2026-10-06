@@ -1,6 +1,6 @@
 // Lecture des gestes de la main à partir des 21 points MediaPipe (repère image caméra, 0–1),
-// et détection du geste d'ouverture du menu (inspiré du « bloom » de la HoloLens) :
-// la main monte fermée, puis s'ouvre d'un coup.
+// et détection du geste d'appel du menu : lever la main ouverte, paume vers le miroir, et la
+// tenir un instant (un anneau se remplit autour de la paume pendant ce temps).
 import { Scene, type Track } from "../scene";
 import { STRIDE } from "../vision/protocol";
 
@@ -21,13 +21,19 @@ export interface HandState {
   track: Track;
   /** Nombre de doigts tendus (sans le pouce). */
   extended: number;
+  /** Main ouverte : au moins trois doigts tendus (tolère un doigt mal vu). */
   open: boolean;
-  closed: boolean;
+  /** Vrai poing : les quatre doigts repliés. Pointer de l'index n'est pas un poing. */
+  fist: boolean;
+  /** Doigts vers le haut (main levée, pas pendante ni à plat). */
+  upright: boolean;
   /** Pouce et index qui se touchent. */
   pinch: boolean;
   /** Centre de la paume, bout de l'index (image caméra, 0–1). */
   palm: [number, number];
   index: [number, number];
+  /** Centre de la paume en px de l'image caméra. */
+  palmPx: [number, number];
   /** Taille de la paume (px de l'image) et largeur d'épaules (px), pour des seuils à l'échelle. */
   palmSize: number;
   bodyScale: number;
@@ -48,9 +54,12 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
     const at = (i: number): Vec => [hand.points[i * STRIDE] * w, hand.points[i * STRIDE + 1] * h];
     const dist = (a: Vec, b: Vec) => Math.hypot(a[0] - b[0], a[1] - b[1]);
     const wrist = at(WRIST);
-    const palmSize = Math.max(dist(wrist, at(MIDDLE_BASE)), 1);
-    // Un doigt est tendu si son bout est nettement plus loin du poignet que son articulation.
+    const mid = at(MIDDLE_BASE);
+    const palmSize = Math.max(dist(wrist, mid), 1);
+    // Un doigt est tendu si son bout est nettement plus loin du poignet que son articulation,
+    // replié si son bout est revenu plus près du poignet que l'articulation.
     const extended = FINGERS.filter(([tip, pip]) => dist(at(tip), wrist) > dist(at(pip), wrist) * 1.15).length;
+    const curled = FINGERS.filter(([tip, pip]) => dist(at(tip), wrist) < dist(at(pip), wrist) * 1.02).length;
 
     let bodyScale = palmSize * 3.5;
     let height = wrist[1] / bodyScale;
@@ -62,15 +71,19 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
       height = (wrist[1] - b(SHOULDER[hand.side])[1]) / bodyScale;
       anchored = true;
     }
-    const mid = at(MIDDLE_BASE);
+    // Doigts vers le haut : poignet → base du majeur à moins de ~50° de la verticale.
+    const up: Vec = [mid[0] - wrist[0], mid[1] - wrist[1]];
+    const palmPx: Vec = [(mid[0] + wrist[0]) / 2, (mid[1] + wrist[1]) / 2];
     states.push({
       track: hand,
       extended,
-      open: extended === 4,
-      closed: extended <= 1,
+      open: extended >= 3,
+      fist: curled === 4,
+      upright: up[1] < 0 && Math.abs(up[0]) < -up[1] * 1.2,
       pinch: dist(at(THUMB_TIP), at(INDEX_TIP)) < palmSize * 0.35,
-      palm: [(mid[0] + wrist[0]) / 2 / w, (mid[1] + wrist[1]) / 2 / h],
+      palm: [palmPx[0] / w, palmPx[1] / h],
       index: [hand.points[INDEX_TIP * STRIDE], hand.points[INDEX_TIP * STRIDE + 1]],
+      palmPx,
       palmSize,
       bodyScale,
       height,
@@ -80,43 +93,59 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
   return states;
 }
 
-/**
- * Geste d'ouverture du menu, en deux temps qui doivent s'enchaîner :
- *   1. la main monte, fermée (au moins 0,5 largeur d'épaules en moins d'une seconde) ;
- *   2. puis elle s'ouvre (fermée → ouverte en moins de 0,6 s), au niveau des épaules ou plus haut.
- * Lever une main déjà ouverte, ou l'ouvrir sans l'avoir montée, ne déclenche rien.
- */
-export class BloomGesture {
-  private history = new Map<string, { t: number; height: number; closed: boolean; open: boolean }[]>();
+/** Temps à tenir la main levée pour appeler le menu. */
+export const SUMMON_MS = 800;
+/** Hauteur maximale du poignet (largeurs d'épaules sous les épaules) : à peu près mi-poitrine. */
+const SUMMON_HEIGHT = 0.7;
+/** Immobile : la paume bouge de moins de ça (largeurs d'épaules) sur STILL_MS. */
+const STILL_DISTANCE = 0.15;
+const STILL_MS = 250;
+/** Main qui bouge ou qui descend : la progression redescend (on renonce en bougeant). */
+const DECAY_MS = 400;
+/** Forme de la main mal vue un instant (un doigt caché, flou) : la progression attend sans reculer. */
+const SHAPE_GRACE_MS = 350;
 
-  /** Progression du geste (0 → 1) par main, et la main qui vient de le réussir. */
-  update(hands: HandState[], now: number): { triggered: HandState | null; rising: HandState | null } {
+/**
+ * Appel du menu : main ouverte, doigts vers le haut, levée au moins à mi-poitrine, et tenue
+ * immobile ~0,9 s. Agiter la main, la lever en passant, la laisser pendre ouverte ou faire un
+ * signe ne suffit pas : il faut la poser là et attendre. La progression est visible (anneau
+ * autour de la paume), donc on comprend ce qui se passe et on peut renoncer en bougeant.
+ */
+export class PalmHold {
+  private hands = new Map<string, { progress: number; last: number; shapeOk: number; trail: { t: number; x: number; y: number }[] }>();
+
+  update(hands: HandState[], now: number): { hand: HandState | null; progress: number; triggered: HandState | null } {
+    let best: { hand: HandState; progress: number } | null = null;
     let triggered: HandState | null = null;
-    let rising: HandState | null = null;
     const seen = new Set<string>();
     for (const hand of hands) {
       const key = hand.track.key;
       seen.add(key);
-      const hist = this.history.get(key) ?? [];
-      hist.push({ t: now, height: hand.height, closed: hand.closed, open: hand.open });
-      while (hist.length && now - hist[0].t > 1600) hist.shift();
-      this.history.set(key, hist);
-
-      // Dernier instant où la main était fermée, et la montée qui l'a précédé.
-      let lastClosed = -1;
-      for (let i = hist.length - 1; i >= 0; i--) if (hist[i].closed) { lastClosed = i; break; }
-      if (lastClosed < 0) continue;
-      const closedAt = hist[lastClosed];
-      let lowest = closedAt.height;
-      for (let i = 0; i <= lastClosed; i++) if (closedAt.t - hist[i].t <= 1000) lowest = Math.max(lowest, hist[i].height);
-      const rise = lowest - closedAt.height; // les hauteurs croissent vers le bas
-      if (hand.closed && rise > 0.25) rising = hand;
-      if (hand.open && rise >= 0.5 && now - closedAt.t <= 600 && (!hand.anchored || hand.height < 0.3)) {
+      const s = this.hands.get(key) ?? { progress: 0, last: now, shapeOk: -Infinity, trail: [] };
+      const dt = Math.min(100, now - s.last);
+      s.last = now;
+      s.trail.push({ t: now, x: hand.palmPx[0], y: hand.palmPx[1] });
+      while (s.trail.length > 1 && now - s.trail[0].t > STILL_MS) s.trail.shift();
+      const moved = Math.hypot(hand.palmPx[0] - s.trail[0].x, hand.palmPx[1] - s.trail[0].y) / hand.bodyScale;
+      const raised = !hand.anchored || hand.height < SUMMON_HEIGHT;
+      const observed = now - s.trail[0].t >= STILL_MS * 0.8;
+      const placed = raised && observed && moved < STILL_DISTANCE;
+      const shape = hand.open && hand.upright;
+      if (shape) s.shapeOk = now;
+      if (placed && shape) s.progress += dt / SUMMON_MS;
+      else if (!placed || now - s.shapeOk > SHAPE_GRACE_MS) s.progress = Math.max(0, s.progress - dt / DECAY_MS);
+      this.hands.set(key, s);
+      if (s.progress >= 1) {
         triggered = hand;
-        this.history.set(key, []); // un seul déclenchement par geste
-      }
+        s.progress = 0;
+      } else if (s.progress > 0 && (!best || s.progress > best.progress)) best = { hand, progress: s.progress };
     }
-    for (const key of [...this.history.keys()]) if (!seen.has(key)) this.history.delete(key);
-    return { triggered, rising };
+    for (const key of [...this.hands.keys()]) if (!seen.has(key)) this.hands.delete(key);
+    if (triggered) for (const s of this.hands.values()) s.progress = 0;
+    return { hand: best?.hand ?? null, progress: best?.progress ?? 0, triggered };
+  }
+
+  reset(): void {
+    this.hands.clear();
   }
 }

@@ -36,7 +36,11 @@ A few things that took some trial and error:
 
 ## Modes
 
-To open the mode menu, bring a closed hand up, then open it, a bit like the HoloLens "bloom". Both steps are needed and have to follow each other quickly, so raising an open hand or just opening it doesn't trigger anything. The menu blooms in a small arc above the hand. Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. Close your fist or drop your hand to dismiss it. `M` opens it from the keyboard.
+To open the mode menu, raise an open hand, palm towards the mirror, and hold it still for about a second. A ring fills up around your palm while you hold, and the menu blooms out of it when the ring is full. Moving the hand cancels it, so waving, passing your hand by your face or signing doesn't open anything. A fingertip that's briefly misread only pauses the ring instead of restarting it, which makes the gesture work from across the room.
+
+Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. The menu doesn't go away on its own when you lower your hand: close your fist and keep it closed, and the menu folds back into your hand (open the fist early to cancel). There's also a Fermer button, and the menu is put away if nobody is in front of the mirror anymore. `M` opens it from the keyboard.
+
+The first version of the gesture (closed hand going up, then opening) was hard to do from a distance, sometimes fired by itself, and pointing with the index looked like a closed fist to it, so the menu closed while you were choosing.
 
 The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same bloom); the first version used CSS glows, which got very slow on a 4K screen.
 
@@ -128,7 +132,7 @@ src/
   calibration.ts     calibration panel
   modes/
     menu.ts          mode menu driven by the hand
-    gestures.ts      open / raised hand, fingertip cursor
+    gestures.ts      hand shape (open, fist, pinch), raise-and-hold to call the menu
     sign-language.ts sign language mode (learning, golden double, recording)
     signs.ts         sign recording, comparison (DTW) and storage
   scene.ts           tracking, smoothing, expressions
