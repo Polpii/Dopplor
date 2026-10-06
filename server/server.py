@@ -118,7 +118,8 @@ def main() -> None:
     parser.add_argument("--format", default="YUYV", help="YUYV (brut, sans décodage) ou MJPG")
     parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270], help="caméra tournée (écran en portrait)")
     parser.add_argument("--exposure", type=int, help="exposition manuelle (unités de 100 µs) : plus court = moins de flou")
-    parser.add_argument("--pose-model", default="full", choices=["lite", "full", "heavy"])
+    # heavy : 2,4× moins de tremblement que full sur une personne immobile, pour ~3 ms de plus.
+    parser.add_argument("--pose-model", default="heavy", choices=["lite", "full", "heavy"])
     parser.add_argument("--max-people", type=int, default=1, help="personnes détectées ; au-delà de 1, on suit la plus proche et la plus centrée (encore instable)")
     parser.add_argument("--cpu", action="store_true", help="forcer l'inférence CPU")
     parser.add_argument("--host", default="127.0.0.1")

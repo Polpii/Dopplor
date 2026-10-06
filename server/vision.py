@@ -283,6 +283,7 @@ class Pipeline:
     ) -> None:
         self.max_people = max(1, max_people)
         self._focus: np.ndarray | None = None  # centre du torse de la personne suivie
+        self._zones: dict[str, Roi] = {}  # dernières zones de zoom, pour les garder immobiles
         self.source = source
         self.models = models
         self.prefer_gpu = prefer_gpu
@@ -343,6 +344,22 @@ class Pipeline:
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
         self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye))
         return dets  # coordonnées image : servent aux zones de zoom
+
+    def _steady(self, rois: list[Roi]) -> list[Roi]:
+        """Zones de zoom immobiles tant que la main (ou le visage) reste dedans : elles suivent
+        le squelette, qui tremble un peu ; un cadrage qui bouge à chaque image fait trembler
+        les points des mains. On ne déplace la zone qu'au-delà d'un petit écart."""
+        out = []
+        for roi in rois:
+            prev = self._zones.get(roi.key)
+            if prev is not None:
+                moved = math.hypot((roi.x + roi.size / 2) - (prev.x + prev.size / 2), (roi.y + roi.size / 2) - (prev.y + prev.size / 2))
+                resized = abs(roi.size / prev.size - 1)
+                if moved < 0.08 * prev.size and resized < 0.15:
+                    roi = prev
+            self._zones[roi.key] = roi
+            out.append(roi)
+        return out
 
     def _pick_person(self, dets: list[Detection]) -> list[Detection]:
         """Garde une seule personne : la plus proche (la plus grande à l'image) et la plus au
@@ -422,9 +439,9 @@ class Pipeline:
         self._prev_pose = (frame.t, pose) if pose is not None else None
 
         if self.enabled["hands"]:
-            self._run("hands", frame, hand_rois(pose, w, h, speed) if pose is not None else None)
+            self._run("hands", frame, self._steady(hand_rois(pose, w, h, speed)) if pose is not None else None)
         if self.enabled["face"]:
-            self._run("face", frame, face_rois(pose, w, h, speed) if pose is not None else None)
+            self._run("face", frame, self._steady(face_rois(pose, w, h, speed)) if pose is not None else None)
 
 
 def gpu_name() -> str:

@@ -45,6 +45,9 @@ const MIN_HITS = 2;
 /** Prédiction : on n'avance jamais de plus de 250 ms, ni de plus de 12 % de l'image. */
 const MAX_LEAD_MS = 250;
 const MAX_LEAD_SHIFT = 0.12;
+/** Vitesses (largeur d'image par seconde) en dessous desquelles on ne prédit pas, puis pleinement. */
+const PREDICT_MIN_SPEED = 0.04;
+const PREDICT_FULL_SPEED = 0.2;
 /**
  * Après une perte : maintien, puis fondu de sortie (ms). Les mains tiennent plus longtemps :
  * un geste rapide floute l'image, la main reste accrochée au poignet le temps d'être retrouvée.
@@ -73,10 +76,12 @@ const FADE_IN_MS = 120;
 
 // [minCutoff, beta] pour des coordonnées normalisées. Les mains bougent vite : beta plus fort.
 // Un peu moins lissé qu'avant : la prédiction compense le retard, et le lissage en ajoute.
+// minCutoff bas = plus lisse à l'arrêt ; beta = réactivité quand ça bouge. Les mains tremblent
+// le plus : lissage un peu plus fort, compensé par un beta élevé pour les gestes rapides.
 const SMOOTHING: Record<TaskKind, [number, number]> = {
-  pose: [1.5, 15],
-  hands: [2.0, 30],
-  face: [1.5, 15],
+  pose: [1.0, 10],
+  hands: [1.0, 25],
+  face: [1.0, 12],
 };
 
 // Point de référence de chaque type (moyenne des indices) pour suivre et dédoublonner.
@@ -188,9 +193,12 @@ export class Scene {
         const lead = t.lostAt === null && leadMs > 0 ? Math.min(leadMs + now - t.updatedAt, MAX_LEAD_MS) / 1000 : 0;
         const v = t.smoother.velocity;
         for (let i = 0; i < value.length; i += STRIDE) {
-          t.points[i] = value[i] + clamp(v[i] * lead, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
-          t.points[i + 1] = value[i + 1] + clamp(v[i + 1] * lead, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
-          t.points[i + 2] = value[i + 2] + v[i + 2] * lead;
+          // Seulement en mouvement : à l'arrêt, la vitesse n'est que du bruit et la prolonger
+          // ferait trembler le point. Transition douce entre les deux.
+          const k = lead * smoothstep(PREDICT_MIN_SPEED, PREDICT_FULL_SPEED, Math.hypot(v[i], v[i + 1]));
+          t.points[i] = value[i] + clamp(v[i] * k, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
+          t.points[i + 1] = value[i + 1] + clamp(v[i + 1] * k, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
+          t.points[i + 2] = value[i + 2] + v[i + 2] * k;
           t.points[i + 3] = value[i + 3];
         }
       }
@@ -409,3 +417,7 @@ function dedupe(kind: TaskKind, detections: Detection[]): Detection[] {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const clamp01 = (v: number) => clamp(v, 0, 1);
+const smoothstep = (e0: number, e1: number, x: number) => {
+  const t = clamp01((x - e0) / (e1 - e0));
+  return t * t * (3 - 2 * t);
+};
