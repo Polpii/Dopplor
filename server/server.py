@@ -119,7 +119,7 @@ def main() -> None:
     parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270], help="caméra tournée (écran en portrait)")
     parser.add_argument("--exposure", type=int, help="exposition manuelle (unités de 100 µs) : plus court = moins de flou")
     parser.add_argument("--pose-model", default="full", choices=["lite", "full", "heavy"])
-    parser.add_argument("--max-people", type=int, default=3, help="personnes détectées ; on suit la plus proche et la plus centrée")
+    parser.add_argument("--max-people", type=int, default=2, help="personnes détectées ; on suit la plus proche et la plus centrée")
     parser.add_argument("--cpu", action="store_true", help="forcer l'inférence CPU")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
