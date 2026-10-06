@@ -59,6 +59,7 @@ On the actual mirror, a small Python server reads the camera and runs MediaPipe 
 Why: on the demo PC (Ubuntu, RTX 2080) native MediaPipe runs the full body model in 4.6 ms, against ~20 ms in the browser on a laptop GPU. The camera is read as raw YUYV, which takes 0.6 ms per frame instead of 16 ms to decode MJPG. Frames are never queued: if the models fall behind, old frames are dropped.
 
 ```bash
+./scripts/setup.sh    # once, on a fresh Ubuntu 24.04: system packages, Chromium, then update.sh
 ./scripts/update.sh   # git pull, builds the page, installs the Python deps (and Node if missing)
 ./scripts/demo.sh     # starts the server, then Chromium fullscreen on the mirror screen
 ./scripts/demo.sh --rotate 90   # if the camera is mounted sideways for a portrait screen

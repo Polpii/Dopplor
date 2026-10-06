@@ -68,6 +68,11 @@ setsid nohup chromium \
 
 # Vrai plein écran (GNOME ignore parfois celui demandé au lancement), puis souris hors champ.
 .venv/bin/python scripts/fullscreen.py Dopplor 20 || echo "Plein écran non appliqué (voir ci-dessus)."
-command -v xdotool >/dev/null && xdotool mousemove 100000 100000 2>/dev/null || true
+# Pointeur caché par unclutter s'il est installé (setup.sh), sinon poussé dans le coin bas-droit.
+if command -v unclutter >/dev/null; then
+  pgrep -x unclutter >/dev/null || setsid nohup unclutter --timeout 1 >/dev/null 2>&1 &
+elif command -v xdotool >/dev/null; then
+  xdotool mousemove "${SCREEN%%,*}" "${SCREEN##*,}" 2>/dev/null || true
+fi
 
 echo "Dopplor lancé sur l'écran $DISPLAY (journaux : $LOGS)."
