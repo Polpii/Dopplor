@@ -58,7 +58,7 @@ if [ "${DOPPLOR_VSYNC:-0}" != "1" ]; then
 fi
 
 setsid nohup chromium \
-  --kiosk "http://127.0.0.1:$PORT/" \
+  --kiosk "http://127.0.0.1:$PORT/$NOVSYNC_QUERY" \
   --start-fullscreen --window-position=0,0 --window-size="${SCREEN:-1920,1080}" \
   --user-data-dir="$PROFILE" \
   --no-first-run --noerrdialogs --disable-infobars --disable-session-crashed-bubble \
