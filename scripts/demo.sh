@@ -35,7 +35,14 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XAUTHORITY="${XAUTHORITY:-$XDG_RUNTIME_DIR/gdm/Xauthority}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 
-setsid nohup .venv/bin/python server/server.py --port "$PORT" "$@" >"$LOGS/server.log" 2>&1 &
+# Réglages propres à ce miroir (ex. « --rotate 270 » si la caméra est tournée), un par ligne
+# ou séparés par des espaces, dans ~/.config/dopplor/server-args. Les options passées à demo.sh
+# s'y ajoutent.
+CONF="$HOME/.config/dopplor/server-args"
+LOCAL_ARGS=()
+[ -f "$CONF" ] && read -r -d '' -a LOCAL_ARGS < "$CONF" || true
+
+setsid nohup .venv/bin/python server/server.py --port "$PORT" "${LOCAL_ARGS[@]}" "$@" >"$LOGS/server.log" 2>&1 &
 echo "Serveur en cours de démarrage (chargement des modèles sur le GPU)…"
 for _ in $(seq 1 120); do
   curl -sf "http://127.0.0.1:$PORT/api/info" >/dev/null && break
