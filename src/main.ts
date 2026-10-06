@@ -1,5 +1,5 @@
 import { CalibrationPanel } from "./calibration";
-import { Menu, type MenuItem } from "./modes/menu";
+import { ICONS, Menu, type MenuItem } from "./modes/menu";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { Scene } from "./scene";
@@ -25,10 +25,6 @@ const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
 const hudMode = $("hud-mode");
 
-// Icônes du menu (24×24, trait).
-const ICON_SKELETON = `<svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M6 9.5l6-2 6 2M8 21l4-7 4 7"/></svg>`;
-const ICON_HAND = `<svg viewBox="0 0 24 24"><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-6.5a1.5 1.5 0 0 1 3 0V11m0-5a1.5 1.5 0 0 1 3 0v8a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2L3.6 15a1.6 1.6 0 0 1 2.4-2.1L8 15"/></svg>`;
-const ICON_CLOSE = `<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
 const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
@@ -110,11 +106,17 @@ async function main(): Promise<void> {
     if (mode === "signs") await signs.enter();
   };
   const items: MenuItem[] = [
-    { id: "skeleton", label: "Squelette", icon: ICON_SKELETON },
-    { id: "signs", label: "Langue des signes", icon: ICON_HAND },
-    { id: "close", label: "Fermer", icon: ICON_CLOSE },
+    { id: "skeleton", label: "Squelette", icon: ICONS.skeleton },
+    { id: "signs", label: "Langue des signes", icon: ICONS.hand },
+    { id: "close", label: "Fermer", icon: ICONS.close },
   ];
-  const menu = new Menu(items, (x, y) => renderer.toScreen(x, y), (id) => void setMode(id));
+  const menu = new Menu(
+    items,
+    (x, y) => renderer.toScreen(x, y),
+    () => [window.innerWidth, window.innerHeight],
+    () => source.frameSize(),
+    (id) => void setMode(id),
+  );
   menu.setCurrent(mode);
   setInterval(() => {
     const now = performance.now();
@@ -137,11 +139,12 @@ async function main(): Promise<void> {
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
-    if ((predicting && due) || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
+    const ui = menu.animating && due;
+    if ((predicting && due) || ui || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
       scene.extrapolate(now, lead);
-      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost]);
+      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost], (out) => menu.draw(out, now));
       drawnVersion = scene.version;
       drawnGhost = ghost.version;
       draws++;

@@ -36,7 +36,9 @@ A few things that took some trial and error:
 
 ## Modes
 
-Raise an open hand above your shoulder and hold it for a moment: a ring fills around the hand and the mode menu opens. Your index finger becomes the cursor; rest it on a mode to pick it (`M` opens the menu from the keyboard).
+To open the mode menu, bring a closed hand up, then open it, a bit like the HoloLens "bloom". Both steps are needed and have to follow each other quickly, so raising an open hand or just opening it doesn't trigger anything. The menu blooms in a small arc above the hand. Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. Close your fist or drop your hand to dismiss it. `M` opens it from the keyboard.
+
+The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same bloom); the first version used CSS glows, which got very slow on a 4K screen.
 
 - **Skeleton**: the default, body + hands + face in neon.
 - **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Do another known sign and the mirror tells you which.

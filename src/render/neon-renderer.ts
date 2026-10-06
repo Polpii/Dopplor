@@ -83,6 +83,8 @@ export class NeonRenderer {
     space: "camera" | "screen" = "camera",
     /** Autres scènes dessinées par-dessus (ex. le double qui montre un signe). */
     extra: Scene[] = [],
+    /** Traits néon supplémentaires en px CSS (interface : menu, curseur…), avec le même bloom. */
+    decorate?: (out: SegmentBuffer) => void,
   ): void {
     if (this.lost || !this.scene) return;
     const { gl } = this;
@@ -100,6 +102,7 @@ export class NeonRenderer {
       this.view = view;
       for (const s of [scene, ...extra]) this.figures.build(s, now, view, this.segments);
     }
+    decorate?.(this.segments);
 
     // 1. Segments → cible HDR, en blending additif.
     this.bindTarget(this.scene);
