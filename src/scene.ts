@@ -100,8 +100,24 @@ const FACE_NOSE_TIP = 1;
 const OWNER_RADIUS = 0.15;
 const PALETTE_COUNT = 2;
 
+/** Réglages d'une scène (par défaut : ceux du squelette vu par la caméra). */
+export interface SceneOptions {
+  smoothing?: Partial<Record<TaskKind, [number, number]>>;
+  /** Vitesses (unités / s) en dessous desquelles on ne prédit pas, puis pleinement. */
+  predictSpeed?: [number, number];
+}
+
+/**
+ * Squelette calé sur le reflet (coordonnées écran) : la prédiction ne s'active que pour un vrai
+ * mouvement rapide. Avec les seuils d'origine, le tremblement d'une image à l'autre passait pour
+ * de la vitesse et était prolongé (rejoué sur un enregistrement : sauts doublés). Mesuré : petit
+ * tremblement divisé par deux, sans retard en plus pendant un mouvement.
+ */
+export const REFLECTED: SceneOptions = { predictSpeed: [0.25, 0.7] };
+
 export class Scene {
   readonly tracks: Record<TaskKind, Map<string, Track>> = { pose: new Map(), hands: new Map(), face: new Map() };
+  constructor(private options: SceneOptions = {}) {}
   /** Incrémenté à chaque changement : le rendu ne redessine que si nécessaire. */
   version = 0;
   private nextId = 0;
@@ -195,7 +211,8 @@ export class Scene {
         for (let i = 0; i < value.length; i += STRIDE) {
           // Seulement en mouvement : à l'arrêt, la vitesse n'est que du bruit et la prolonger
           // ferait trembler le point. Transition douce entre les deux.
-          const k = lead * smoothstep(PREDICT_MIN_SPEED, PREDICT_FULL_SPEED, Math.hypot(v[i], v[i + 1]));
+          const [lo, hi] = this.options.predictSpeed ?? [PREDICT_MIN_SPEED, PREDICT_FULL_SPEED];
+          const k = lead * smoothstep(lo, hi, Math.hypot(v[i], v[i + 1]));
           t.points[i] = value[i] + clamp(v[i] * k, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
           t.points[i + 1] = value[i + 1] + clamp(v[i + 1] * k, -MAX_LEAD_SHIFT, MAX_LEAD_SHIFT);
           t.points[i + 2] = value[i + 2] + v[i + 2] * k;
@@ -265,7 +282,7 @@ export class Scene {
   }
 
   private create(kind: TaskKind, d: Detection, timestamp: number, now: number): Track {
-    const [minCutoff, beta] = SMOOTHING[kind];
+    const [minCutoff, beta] = this.options.smoothing?.[kind] ?? SMOOTHING[kind];
     const smoother = new OneEuroBank(d.points.length, minCutoff, beta);
     smoother.filter(d.points, timestamp / 1000);
     const t: Track = {

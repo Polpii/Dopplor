@@ -562,12 +562,11 @@ class Pipeline:
         if kind == "pose":
             self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
             self._pose_pts = dets[0].points
-        # L'œil : iris du visage (précis), sinon yeux du squelette.
+        # L'œil : toujours les yeux du squelette. Passer de l'iris du visage (quand il est vu) aux
+        # yeux du squelette décalait l'œil estimé de ~7 cm, donc tout le squelette dessiné de ~3 cm
+        # d'un coup, à chaque fois que le visage apparaissait ou disparaissait (enregistré).
         eye_src, eye_raw = None, None
-        if kind == "face" and lifted[0] is not None and len(dets[0].points) > 473:
-            eye_src, eye_raw = "visage", (lifted[0].xyz[468] + lifted[0].xyz[473]) / 2
-            self._face_eye_at = frame.t
-        elif kind == "pose" and lifted[0] is not None and frame.t - self._face_eye_at > 0.3:
+        if kind == "pose" and lifted[0] is not None:
             eye_src, eye_raw = "squelette", (lifted[0].xyz[2] + lifted[0].xyz[5]) / 2
         if eye_raw is not None:
             m.update_eye(eye_raw)

@@ -3,7 +3,7 @@ import { ICONS, Menu, type MenuItem } from "./modes/menu";
 import { DanceMode } from "./modes/dance/dance-mode";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
-import { Scene } from "./scene";
+import { REFLECTED, Scene } from "./scene";
 import { EXPRESSIONS, type Expression, type TaskKind } from "./vision/protocol";
 import { RemoteSource, findServer } from "./vision/remote";
 import type { VisionSource } from "./vision/source";
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
   const noVsync = new URLSearchParams(location.search).has("novsync");
   // Calé sur le reflet, le serveur envoie deux versions : `scene` garde ce que voit la caméra
   // (gestes, modes), `reflected` ce qu'on voit dans le reflet (affichage du squelette).
-  const reflected = new Scene();
+  const reflected = new Scene(REFLECTED);
   source.onResult = (kind, detections, timestamp, raw) => {
     scene.update(kind, raw ?? detections, timestamp);
     if (raw) reflected.update(kind, detections, timestamp);
@@ -219,7 +219,10 @@ async function main(): Promise<void> {
     if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
-      if (skeleton) user.extrapolate(now, lead);
+      // Calé sur le reflet : avance plafonnée à 80 ms, la latence réelle (caméra, calcul, écran).
+      // Au-delà, la prédiction dépasse puis revient à chaque arrêt : des sauts (mesuré, 150 ms
+      // doublait les plus grands écarts d'une image à l'autre pour le même suivi en mouvement).
+      if (skeleton) user.extrapolate(now, aligned ? Math.min(lead, 80) : lead);
       renderer.render(skeleton ? user : blank, now, w, h, aligned ? "screen" : "camera", [ghost], (out) => {
         dance.draw(out, now);
         menu.draw(out, now);
