@@ -363,6 +363,14 @@ function icon(out: SegmentBuffer, s: Stroke, cx: number, cy: number, scale: numb
 
 /** Icônes en traits (carré [-1, 1]²). */
 export const ICONS: Record<string, Stroke[]> = {
+  dance: [
+    { c: [0.12, -0.7], r: 0.2 },
+    [0.08, -0.48, -0.08, 0.2],
+    [0.05, -0.36, 0.62, -0.88],
+    [0.05, -0.36, -0.55, -0.05],
+    [-0.08, 0.2, -0.5, 0.88],
+    [-0.08, 0.2, 0.38, 0.48, 0.3, 0.9],
+  ],
   skeleton: [
     { c: [0, -0.68], r: 0.22 },
     [0, -0.42, 0, 0.25],

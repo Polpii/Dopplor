@@ -1,5 +1,6 @@
 import { CalibrationPanel } from "./calibration";
 import { ICONS, Menu, type MenuItem } from "./modes/menu";
+import { DanceMode } from "./modes/dance/dance-mode";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { Scene } from "./scene";
@@ -25,7 +26,7 @@ const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
 const hudMode = $("hud-mode");
 
-const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes" };
+const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
 const LEAD_KEY = "dopplor.predictionMs";
@@ -97,17 +98,28 @@ async function main(): Promise<void> {
   // geste (main ouverte levée) ou avec la touche M.
   const ghost = new Scene(); // double doré du mode langue des signes
   const signs = new SignLanguageMode(scene, ghost, () => source.frameSize(), source.apiBase?.() ?? null, () => renderer.visibleArea());
+  const dance = new DanceMode(
+    scene,
+    ghost,
+    () => source.frameSize(),
+    () => renderer.visibleArea(),
+    (x, y) => renderer.toScreen(x, y),
+    () => [window.innerWidth, window.innerHeight],
+  );
   let mode = "skeleton";
   const setMode = async (id: string) => {
     if (id === mode || !(id in MODE_NAMES)) return;
     if (mode === "signs") signs.exit();
+    if (mode === "dance") dance.exit();
     mode = id;
     menu.setCurrent(mode);
     if (mode === "signs") await signs.enter();
+    if (mode === "dance") dance.enter();
   };
   const items: MenuItem[] = [
     { id: "skeleton", label: "Squelette", icon: ICONS.skeleton },
     { id: "signs", label: "Langue des signes", icon: ICONS.hand },
+    { id: "dance", label: "Danse", icon: ICONS.dance },
   ];
   const menu = new Menu(
     items,
@@ -117,11 +129,12 @@ async function main(): Promise<void> {
     (id) => void setMode(id),
   );
   menu.setCurrent(mode);
-  if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs });
+  if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
     signs.update(now);
+    dance.update(now);
   }, 33);
 
   // Rendu : découplé de l'inférence. Avec la prédiction, les points avancent à chaque
@@ -141,12 +154,16 @@ async function main(): Promise<void> {
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
     // Le double du mode langue des signes avance à chaque image affichée (mouvement fluide).
     if (signs.animating && due) signs.animate(now);
-    const ui = menu.animating && due;
+    if (dance.animating && due) dance.animate(now);
+    const ui = (menu.animating || dance.animating) && due;
     if ((predicting && due) || ui || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
       scene.extrapolate(now, lead);
-      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost], (out) => menu.draw(out, now));
+      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost], (out) => {
+        dance.draw(out, now);
+        menu.draw(out, now);
+      });
       drawnVersion = scene.version;
       drawnGhost = ghost.version;
       draws++;
@@ -202,6 +219,7 @@ async function main(): Promise<void> {
       return;
     }
     if (mode === "signs" && signs.onKey(e)) return;
+    if (mode === "dance" && dance.onKey(e)) return;
     // Menu ouvert : 1, 2, 3… choisissent un mode au clavier.
     const pick = menu.open ? items[Number(e.key) - 1] : undefined;
     if (pick) {

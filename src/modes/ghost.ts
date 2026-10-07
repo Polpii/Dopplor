@@ -117,3 +117,80 @@ function mix(a: GhostPose, b: GhostPose, k: number): GhostPose {
 }
 
 const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+
+/** Partie de l'image caméra visible à l'écran (fractions 0–1). */
+export interface VisibleArea {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/**
+ * Où mettre le double (centre des épaules et largeur d'épaules, px de l'image caméra) : à côté
+ * de la personne, à sa taille. Il garde son côté tant qu'il y tient (pas d'aller-retour quand on
+ * est au milieu), et suit la personne en douceur. Sur un écran en portrait, si la personne
+ * remplit le cadre, il se met en vignette en haut, à côté de la tête.
+ */
+export class GhostPlacer {
+  private anchor: { x: number; y: number; size: number; side: number; at: number } | null = null;
+
+  reset(): void {
+    this.anchor = null;
+  }
+
+  /**
+   * `body` : centre des épaules et largeur d'épaules de la personne (px), ou null si personne.
+   * `reach` : demi-largeur occupée par le double, en largeurs d'épaules (bras écartés).
+   */
+  place(now: number, body: { center: [number, number]; scale: number } | null, w: number, h: number, area: VisibleArea, reach = 1.6): { x: number; y: number; size: number } {
+    const center = body?.center ?? [w / 2, h * 0.4];
+    const scale = body?.scale ?? w * 0.18;
+    const left = area.x0 * w;
+    const right = area.x1 * w;
+    const half = (s: number) => s * reach;
+    const beside = (side: number) => {
+      let size = scale;
+      let x = center[0] + side * scale * (reach + 0.6);
+      while (size > scale * 0.85 && (x - half(size) < left || x + half(size) > right)) {
+        size *= 0.95;
+        x = center[0] + side * (scale + size) * (reach / 2 + 0.35);
+      }
+      return { x, y: center[1], size, fits: x - half(size) >= left && x + half(size) <= right };
+    };
+    // Côté : celui d'avant tant qu'il convient ; sinon celui où il y a le plus de place.
+    const prev = this.anchor;
+    let side = prev?.side ?? (center[0] - left > right - center[0] ? -1 : 1);
+    let spot = beside(side);
+    if (!spot.fits) {
+      const other = beside(-side);
+      if (other.fits) {
+        side = -side;
+        spot = other;
+      }
+    }
+    let target = { x: spot.x, y: spot.y, size: spot.size };
+    if (!spot.fits) {
+      // Vignette : en haut, du côté choisi, sur ~46 % de la largeur visible.
+      const size = ((right - left) * 0.46) / (reach * 2);
+      target = {
+        x: side > 0 ? right - half(size) - (right - left) * 0.03 : left + half(size) + (right - left) * 0.03,
+        y: area.y0 * h + (area.y1 - area.y0) * h * 0.3,
+        size,
+      };
+    }
+    // Suivi en douceur (~0,3 s), sauf la première fois.
+    if (!prev) this.anchor = { ...target, side, at: now };
+    else {
+      const k = 1 - Math.exp(-Math.max(0, now - prev.at) / 300);
+      this.anchor = {
+        x: prev.x + (target.x - prev.x) * k,
+        y: prev.y + (target.y - prev.y) * k,
+        size: prev.size + (target.size - prev.size) * k,
+        side,
+        at: now,
+      };
+    }
+    return this.anchor;
+  }
+}

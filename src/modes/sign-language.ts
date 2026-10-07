@@ -12,7 +12,7 @@
 import { GHOST_COLOR } from "../render/figures";
 import { Scene, type Side } from "../scene";
 import type { Detection } from "../vision/protocol";
-import { GhostClip } from "./ghost";
+import { GhostClip, GhostPlacer } from "./ghost";
 import {
   SIGN_FPS,
   SignStore,
@@ -101,8 +101,8 @@ export class SignLanguageMode {
   private lastMatch = 0;
   private recorded: SignFrame[] = [];
   private ghostStart = 0;
-  /** Où se tient le double (px de l'image caméra) : suit la personne en douceur, garde son côté. */
-  private anchor: { x: number; y: number; size: number; side: number; vignette: boolean; at: number } | null = null;
+  /** Où se tient le double : suit la personne en douceur, garde son côté. */
+  private placer = new GhostPlacer();
   /** Jauge affichée : monte vite, redescend doucement (pas de chiffres qui sautent). */
   private shownScore = 0;
   private active = false;
@@ -307,7 +307,7 @@ export class SignLanguageMode {
     if (!clip || !clip.duration) return;
     const frame = clip.sample(now - this.ghostStart);
     const [w, h] = this.frameSize();
-    const a = this.placeGhost(now, w, h);
+    const a = this.placer.place(now, this.body(w, h), w, h, this.visible());
     const k = a.size / clip.scale;
     const map = (x: number, y: number): [number, number] => [(a.x + (x - clip.center[0]) * k) / w, (a.y + (y - clip.center[1]) * k) / h];
 
@@ -333,72 +333,15 @@ export class SignLanguageMode {
     for (const map of Object.values(this.ghost.tracks)) for (const t of map.values()) t.color = GHOST_COLOR;
   }
 
-  /**
-   * Où mettre le double (centre des épaules et largeur d'épaules, px de l'image caméra) : à côté
-   * de la personne, à sa taille. Il garde son côté tant qu'il y tient (pas d'aller-retour quand on
-   * est au milieu), et suit la personne en douceur. Sur un écran en portrait, si la personne
-   * remplit le cadre, il se met en vignette en haut, à côté de la tête.
-   */
-  private placeGhost(now: number, w: number, h: number): { x: number; y: number; size: number } {
-    let center: [number, number] = [w / 2, h * 0.4];
-    let scale = w * 0.18;
+  /** Centre et largeur des épaules de la personne suivie (px de l'image caméra). */
+  private body(w: number, h: number): { center: [number, number]; scale: number } | null {
     let body = null;
     for (const b of this.scene.bodies) if (b.lostAt === null) body = b;
-    if (body) {
-      const v = body.smoother.value;
-      const l = [v[44] * w, v[45] * h];
-      const r = [v[48] * w, v[49] * h];
-      scale = Math.max(Math.hypot(l[0] - r[0], l[1] - r[1]), 1);
-      center = [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2];
-    }
-    const area = this.visible();
-    const left = area.x0 * w;
-    const right = area.x1 * w;
-    const half = (s: number) => s * 1.6; // bras écartés : ~1,6 largeur d'épaules de chaque côté
-    const beside = (side: number) => {
-      let size = scale;
-      let x = center[0] + side * scale * 2.2;
-      while (size > scale * 0.85 && (x - half(size) < left || x + half(size) > right)) {
-        size *= 0.95;
-        x = center[0] + side * (scale + size) * 1.15;
-      }
-      return { x, y: center[1], size, fits: x - half(size) >= left && x + half(size) <= right };
-    };
-    // Côté : celui d'avant tant qu'il convient ; sinon celui où il y a le plus de place.
-    const prev = this.anchor;
-    let side = prev?.side ?? (center[0] - left > right - center[0] ? -1 : 1);
-    let spot = beside(side);
-    if (!spot.fits) {
-      const other = beside(-side);
-      if (other.fits) {
-        side = -side;
-        spot = other;
-      }
-    }
-    let target = { x: spot.x, y: spot.y, size: spot.size };
-    const vignette = !spot.fits;
-    if (vignette) {
-      const size = ((right - left) * 0.46) / 3.2;
-      target = {
-        x: side > 0 ? right - half(size) - (right - left) * 0.03 : left + half(size) + (right - left) * 0.03,
-        y: area.y0 * h + (area.y1 - area.y0) * h * 0.3,
-        size,
-      };
-    }
-    // Suivi en douceur (~0,3 s), sauf la première fois.
-    if (!prev) this.anchor = { ...target, side, vignette, at: now };
-    else {
-      const k = 1 - Math.exp(-Math.max(0, now - prev.at) / 300);
-      this.anchor = {
-        x: prev.x + (target.x - prev.x) * k,
-        y: prev.y + (target.y - prev.y) * k,
-        size: prev.size + (target.size - prev.size) * k,
-        side,
-        vignette,
-        at: now,
-      };
-    }
-    return this.anchor;
+    if (!body) return null;
+    const v = body.smoother.value;
+    const l = [v[44] * w, v[45] * h];
+    const r = [v[48] * w, v[49] * h];
+    return { center: [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2], scale: Math.max(Math.hypot(l[0] - r[0], l[1] - r[1]), 1) };
   }
 
   // --- Enregistrement ----------------------------------------------------------------------------

@@ -46,12 +46,15 @@ The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same
 
 - **Skeleton**: the default, body + hands + face in neon.
 - **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. The double plays the sign smoothly at the screen's frame rate: the recordings are 15 frames a second with a few gaps, so frames are interpolated, missing hands are filled in, and at the end it holds the pose and glides back to the start instead of jumping. It keeps its side next to you and follows you gently. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
+- **Dance**: you dance side by side with the golden double, like in a dance class facing the mirror: when it raises its right arm, you raise your right arm. It invites you by raising its arms; raise both of yours (or press space) and the music starts, with a "3, 2, 1, Danse !" on the beat. The upcoming moves scroll in at the bottom as little neon figures and reach a marker right on the beat. Each marked pose gets a word above your head (Parfait, Super, Bien, Oups), sparks fly from your hands, your skeleton flashes gold on a perfect, and a combo multiplies the points. A halo pulses on the floor under each of you on every beat. At the end, a score and up to three stars; raise your arms to dance again.
 
 There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). Lingua Libre also has a lot of library vocabulary (conseiller, réservation…), so only about 30 simple everyday words are kept (`WORDS` in the script): greetings, please and thank you, questions, a few verbs and some animals. They're in `data/lsf/`. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
 
 The movement is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. It also accepts the sign done with the other hand, and it wants the movement, not just the right pose. The threshold was tuned on simulated imitators: other body proportions, other speed, sloppier hands. Looking like the sign isn't enough, you have to actually do it. The part of your movement matched to the sign has to last at least half the sign, so a held pose can't be squeezed onto it. The gesture also has to cover at least half the amplitude of the original, measured as how far the wrist travels from end to end. Measuring the path length instead was fooled by tracking jitter: with realistic jitter, simply holding your hands up validated the sign 43% of the time and idly moving them 40%. It's 1% and 2% now, while imitations still pass 92 to 96% of the time. This still needs tuning with real people; `scripts/record.py` records what the mirror sees so it can be replayed.
 
 You can add your own signs: someone who knows LSF presses `R`, signs once in front of the mirror and names it. They're stored by the Python server in `signs/`.
+
+The music is generated in the browser with Web Audio: a 112 BPM house-funk groove in A minor (kick, clap, hats, bass, chord stabs, an arpeggio with echo, a noise riser before the last part), about 1 min 15. Nothing to download, no rights issues, and the choreography lands exactly on the beat because every note is known. The double's timing follows the audio clock, corrected for output latency. The choreography is 15 moves (balance, V arms, robot, wave, disco, push, clap, star, leg…) written as key poses on the beats, with sharp or smooth transitions and a knee bounce on every beat. A pose is scored on the direction of each arm segment, the legs when the move uses them and they're in view, and the lean of the torso, keeping the best match in a window from 0.15 s before to 0.4 s after the beat (you react to the double). Doing the exact pose scores 100%, the same pose on the wrong side mostly "Oups", and standing still with the arms down never gets a "Parfait": poses that look like standing still aren't scored.
 
 ## Lining up with the reflection
 
@@ -110,6 +113,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `↑` `↓` | more / less prediction (latency compensation) |
 | `M` | mode menu (or open a palm-up fist in one go) |
 | `R` `←` `→` `Suppr` | sign language mode: record a sign, previous / next, delete |
+| `Espace` | dance mode: start / stop the music |
 | `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
 | `H` | hide the debug panel |
@@ -136,6 +140,10 @@ src/
     sign-language.ts sign language mode (learning, golden double, recording)
     signs.ts         sign recording, comparison (DTW) and storage
     ghost.ts         smooth playback of a sign by the golden double
+    dance/
+      dance-mode.ts  dance mode (flow, double, feedback, timeline)
+      choreo.ts      moves, the double's skeleton, scoring
+      music.ts       the generated music (Web Audio) and its clock
   scene.ts           tracking, smoothing, expressions
   vision/
     remote.ts        landmarks from the Python server
