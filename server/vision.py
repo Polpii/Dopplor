@@ -71,6 +71,9 @@ class Result:
     space: str = "camera"
     #: Où l'œil voit son propre reflet (coordonnées écran), pour vérifier la calibration.
     eye: list[float] | None = None
+    #: Calé sur le reflet : les mêmes détections en coordonnées de l'image, pour les gestes et
+    #: les modes (qui raisonnent sur ce que voit la caméra) ; l'affichage prend `detections`.
+    raw: list[Detection] | None = None
 
 
 @dataclass
@@ -342,7 +345,7 @@ class Pipeline:
         self.zoomed[kind] = rois is not None
         shown, space = self._to_reflection(kind, frame, dets)
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
-        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye))
+        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None))
         return dets  # coordonnées image : servent aux zones de zoom
 
     def _steady(self, rois: list[Roi]) -> list[Roi]:

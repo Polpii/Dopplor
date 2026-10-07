@@ -36,8 +36,7 @@ def encode(header: dict, *blobs: bytes) -> bytes:
 
 
 def result_message(r: Result) -> bytes:
-    dets = []
-    for d in r.detections:
+    def meta_of(d) -> dict:
         meta = {"n": len(d.points)}
         if d.key:
             meta["key"] = d.key
@@ -45,7 +44,9 @@ def result_message(r: Result) -> bytes:
             meta["label"] = d.label
         if d.expressions is not None:
             meta["expr"] = [round(v, 4) for v in d.expressions]
-        dets.append(meta)
+        return meta
+
+    dets = [meta_of(d) for d in r.detections]
     header = {
         "type": "result",
         "kind": r.kind,
@@ -58,7 +59,10 @@ def result_message(r: Result) -> bytes:
     }
     if r.eye is not None:
         header["eye"] = [round(v, 4) for v in r.eye]
-    return encode(header, *(d.points.tobytes() for d in r.detections))
+    raw = r.raw or []
+    if raw:
+        header["raw"] = [meta_of(d) for d in raw]
+    return encode(header, *(d.points.tobytes() for d in r.detections), *(d.points.tobytes() for d in raw))
 
 
 class Hub:

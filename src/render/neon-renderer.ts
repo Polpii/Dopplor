@@ -30,6 +30,8 @@ export class NeonRenderer {
   private figures = new FigureBuilder();
   /** Dernière transformation image caméra → écran (px CSS), pour placer l'interface sur le corps. */
   private view = { sx: 1, tx: 0, sy: 1, ty: 0 };
+  private cover = { sx: 1, tx: 0, sy: 1, ty: 0 };
+  private align = { s: 1, x: 0, y: 0 };
   private lost = false;
 
   private segmentProgram!: Program;
@@ -75,6 +77,20 @@ export class NeonRenderer {
    * `space` "camera" : points dans l'image caméra (cadrage « cover » + inversion miroir).
    * "screen" : points déjà calés sur le reflet par le serveur, en coordonnées écran 0–1.
    */
+  /**
+   * Calage sur le reflet : échelle et décalage (px CSS) qui amènent un point de l'image caméra
+   * (cadrage « cover ») là où on le voit dans le reflet. Le double, les halos, le menu… suivent
+   * ainsi le reflet de la personne. null : pas de calage (le reflet n'est pas aligné).
+   */
+  setAlignment(a: { s: number; x: number; y: number } | null): void {
+    this.align = a ?? { s: 1, x: 0, y: 0 };
+  }
+
+  /** Point de l'image caméra → px CSS, sans calage sur le reflet. */
+  coverPoint(x: number, y: number): [number, number] {
+    return [this.cover.tx + this.cover.sx * x, this.cover.ty + this.cover.sy * y];
+  }
+
   render(
     scene: Scene,
     now: number,
@@ -95,12 +111,14 @@ export class NeonRenderer {
       const scale = Math.max(this.cssWidth / videoWidth, this.cssHeight / videoHeight);
       const dw = videoWidth * scale;
       const dh = videoHeight * scale;
-      const view =
-        space === "screen"
-          ? { sx: this.cssWidth, tx: 0, sy: this.cssHeight, ty: 0 }
-          : { sx: -dw, tx: (this.cssWidth - dw) / 2 + dw, sy: dh, ty: (this.cssHeight - dh) / 2 };
-      this.view = view;
-      for (const s of [scene, ...extra]) this.figures.build(s, now, view, this.segments);
+      this.cover = { sx: -dw, tx: (this.cssWidth - dw) / 2 + dw, sy: dh, ty: (this.cssHeight - dh) / 2 };
+      const { s, x, y } = this.align;
+      // Repère caméra calé sur le reflet : sert aux scènes en coordonnées caméra (le double).
+      const aligned = { sx: this.cover.sx * s, tx: this.cover.tx * s + x, sy: this.cover.sy * s, ty: this.cover.ty * s + y };
+      this.view = aligned;
+      const main = space === "screen" ? { sx: this.cssWidth, tx: 0, sy: this.cssHeight, ty: 0 } : aligned;
+      this.figures.build(scene, now, main, this.segments);
+      for (const s of extra) this.figures.build(s, now, aligned, this.segments);
     }
     decorate?.(this.segments);
 

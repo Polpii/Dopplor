@@ -11,7 +11,9 @@ export type Space = "camera" | "screen";
 export interface VisionSource {
   /** "navigateur" ou "python". */
   readonly label: string;
-  onResult: (kind: TaskKind, detections: Detection[], timestamp: number) => void;
+  /** `raw` : quand les points sont calés sur le reflet (`detections`), les mêmes dans l'image
+   * caméra, pour les gestes et les modes. */
+  onResult: (kind: TaskKind, detections: Detection[], timestamp: number, raw?: Detection[]) => void;
   onError: (message: string) => void;
   /** Taille de l'image caméra (pour caler le rendu dessus). */
   frameSize(): [number, number];

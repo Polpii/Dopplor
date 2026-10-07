@@ -37,6 +37,7 @@ interface ResultHeader {
   space?: Space;
   eye?: [number, number];
   dets: { n: number; key?: string; label?: string; expr?: number[] }[];
+  raw?: { n: number; key?: string; label?: string; expr?: number[] }[];
 }
 
 const decoder = new TextDecoder();
@@ -124,18 +125,20 @@ export class RemoteSource implements VisionSource {
       return;
     }
 
-    const detections: Detection[] = header.dets.map((d) => {
+    const read = (d: ResultHeader["dets"][number]): Detection => {
       const points = new Float32Array(buffer, offset, d.n * 4);
       offset += d.n * 16;
       return { points, key: d.key, label: d.label, expressions: d.expr ? Float32Array.from(d.expr) : undefined };
-    });
+    };
+    const detections = header.dets.map(read);
+    const raw = header.raw?.map(read);
     if (header.kind === "pose") {
       this.lastWall = header.wall;
       this.resultSpace = header.space ?? "camera";
       this.eyeOnGlass = header.eye ?? null;
     }
     // Daté à l'heure murale de capture : même horloge que Date.now() côté page (mesures de retard).
-    if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.wall);
+    if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.wall, raw);
   }
 
   private send(cmd: object): void {

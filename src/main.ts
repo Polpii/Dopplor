@@ -86,8 +86,12 @@ async function main(): Promise<void> {
   // requestAnimationFrame, que Chrome recadence alors à ~60 Hz dès qu'on ne dessine pas à chaque
   // fois. On dessine dès qu'un résultat arrive, et un minuteur fait avancer la prédiction.
   const noVsync = new URLSearchParams(location.search).has("novsync");
-  source.onResult = (kind, detections, timestamp) => {
-    scene.update(kind, detections, timestamp);
+  // Calé sur le reflet, le serveur envoie deux versions : `scene` garde ce que voit la caméra
+  // (gestes, modes), `reflected` ce qu'on voit dans le reflet (affichage du squelette).
+  const reflected = new Scene();
+  source.onResult = (kind, detections, timestamp, raw) => {
+    scene.update(kind, raw ?? detections, timestamp);
+    if (raw) reflected.update(kind, detections, timestamp);
     if (noVsync) draw(performance.now());
   };
   source.onError = (message) => setStatus(message, message !== "");
@@ -156,12 +160,52 @@ async function main(): Promise<void> {
   let lastDraw = 0;
   let draws = 0;
   let latency = 0;
+  // Recalage caméra → reflet (échelle + décalage, px CSS), ajusté sur le corps de la personne vu
+  // des deux façons, et lissé : ce qui se place autour d'elle (double, halos, menu) suit son reflet.
+  let fit = { s: 1, x: 0, y: 0, at: 0 };
+  const FIT_POINTS = [0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24];
+  const alignment = (now: number) => {
+    const a = [...scene.bodies].find((b) => b.lostAt === null);
+    const b = [...reflected.bodies].find((t) => t.lostAt === null);
+    if (a && b) {
+      const c: [number, number][] = [];
+      const d: [number, number][] = [];
+      for (const i of FIT_POINTS) {
+        if (a.points[i * 4 + 3] < 0.5 || b.points[i * 4 + 3] < 0.5) continue;
+        c.push(renderer.coverPoint(a.points[i * 4], a.points[i * 4 + 1]));
+        d.push([b.points[i * 4] * window.innerWidth, b.points[i * 4 + 1] * window.innerHeight]);
+      }
+      if (c.length >= 3) {
+        const mean = (p: [number, number][]) => p.reduce((m, q) => [m[0] + q[0] / p.length, m[1] + q[1] / p.length], [0, 0]);
+        const [cx, cy] = mean(c);
+        const [dx, dy] = mean(d);
+        let num = 0;
+        let den = 0;
+        c.forEach((q, i) => {
+          num += (q[0] - cx) * (d[i][0] - dx) + (q[1] - cy) * (d[i][1] - dy);
+          den += (q[0] - cx) ** 2 + (q[1] - cy) ** 2;
+        });
+        const sc = den > 0 ? num / den : 0;
+        if (sc > 0.05) {
+          const target = { s: sc, x: dx - sc * cx, y: dy - sc * cy };
+          const k = fit.at ? 1 - Math.exp(-Math.max(0, now - fit.at) / 250) : 1;
+          fit = { s: fit.s + (target.s - fit.s) * k, x: fit.x + (target.x - fit.x) * k, y: fit.y + (target.y - fit.y) * k, at: now };
+        }
+      }
+    }
+    return fit;
+  };
   const draw = (now: number) => {
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
     // squelette est allumé.
-    const userFading = scene.prune(now);
+    const aligned = source.space?.() === "screen";
+    const user = aligned ? reflected : scene;
+    if (aligned) scene.prune(now);
+    else reflected.prune(now);
+    const userFading = user.prune(now);
+    renderer.setAlignment(aligned ? alignment(now) : null);
     const fading = (skeleton && userFading) || ghost.prune(now);
-    const predicting = skeleton && lead > 0 && !scene.empty;
+    const predicting = skeleton && lead > 0 && !user.empty;
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
@@ -169,16 +213,16 @@ async function main(): Promise<void> {
     if (signs.animating && due) signs.animate(now);
     if (dance.animating && due) dance.animate(now);
     const ui = (menu.animating || dance.animating) && due;
-    const userChanged = skeleton && scene.version !== drawnVersion;
+    const userChanged = skeleton && user.version !== drawnVersion;
     if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
-      if (skeleton) scene.extrapolate(now, lead);
-      renderer.render(skeleton ? scene : blank, now, w, h, source.space?.() ?? "camera", [ghost], (out) => {
+      if (skeleton) user.extrapolate(now, lead);
+      renderer.render(skeleton ? user : blank, now, w, h, aligned ? "screen" : "camera", [ghost], (out) => {
         dance.draw(out, now);
         menu.draw(out, now);
       });
-      drawnVersion = scene.version;
+      drawnVersion = user.version;
       drawnGhost = ghost.version;
       drawnSkeleton = skeleton;
       draws++;
