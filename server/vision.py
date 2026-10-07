@@ -74,6 +74,8 @@ class Result:
     #: Calé sur le reflet : les mêmes détections en coordonnées de l'image, pour les gestes et
     #: les modes (qui raisonnent sur ce que voit la caméra) ; l'affichage prend `detections`.
     raw: list[Detection] | None = None
+    #: Calé sur le reflet : pour chaque détection, d'où vient sa distance (diagnostic).
+    debug: list | None = None
 
 
 @dataclass
@@ -309,6 +311,7 @@ class Pipeline:
         #: Squelette de l'image en cours en 3D (repère caméra) et ses points : les mains et le
         #: visage s'y accrochent.
         self._pose_xyz: np.ndarray | None = None
+        self._debug: list | None = None
         self._pose_pts: np.ndarray | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
@@ -349,7 +352,8 @@ class Pipeline:
         self.zoomed[kind] = rois is not None
         shown, space = self._to_reflection(kind, frame, dets)
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
-        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None))
+        debug = self._debug if space == "screen" else None
+        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None, debug))
         return dets  # coordonnées image : servent aux zones de zoom
 
     def _steady(self, rois: list[Roi]) -> list[Roi]:
@@ -433,6 +437,10 @@ class Pipeline:
             return None
 
         lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}", zref(d)) for d in dets]
+        self._debug = [
+            {"src": l.source, "mesuré": round(l.measured, 2), "z": round(float(np.median(l.xyz[:, 2])), 3)} if l is not None else None
+            for l in lifted
+        ]
         if kind == "pose":
             self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
             self._pose_pts = dets[0].points

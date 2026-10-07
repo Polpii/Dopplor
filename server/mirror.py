@@ -98,9 +98,12 @@ def angles_from_up(up: np.ndarray) -> tuple[float, float]:
 @dataclass
 class Lifted:
     """Points d'une détection en 3D (repère caméra, mètres)."""
-
     xyz: np.ndarray  # (n, 3)
     ok: bool
+    #: D'où vient la distance : "profondeur" (capteur), "secours" (poignet, yeux), "taille".
+    source: str = ""
+    #: Part des points dont la profondeur vient directement du capteur.
+    measured: float = 0.0
 
 
 @dataclass
@@ -190,11 +193,14 @@ class Mirror:
 
         anchor = zref
         zref = None
+        source = ""
+        # Profondeur mesurée sous chaque point (médiane d'une petite fenêtre), NaN si inconnue.
+        measured = np.full(len(points), np.nan)
         if depth is not None:
-            samples = []
             H, W = depth.shape
-            # Une quarantaine de points suffisent (le visage en a 478) : la médiane est robuste.
-            for i in range(0, len(points), max(1, len(points) // 40)):
+            # Visage : une quarantaine de points suffisent (il en a 478) ; corps et mains : tous.
+            step = max(1, len(points) // 40) if kind == "face" else 1
+            for i in range(0, len(points), step):
                 if kind == "pose" and points[i, 3] < 0.5:
                     continue
                 x, y = int(round(u[i])), int(round(v[i]))
@@ -202,12 +208,16 @@ class Mirror:
                     patch = depth[y - 2 : y + 3, x - 2 : x + 3]
                     valid = patch[patch > 0]
                     if valid.size >= 5:
-                        samples.append(float(np.median(valid)) / (1 + rel[i]))
-            if len(samples) >= 3:
-                zref = float(np.median(samples))
-        if zref is None:
+                        measured[i] = float(np.median(valid))
+            ok = ~np.isnan(measured)
+            if ok.sum() >= 3:
+                zref = float(np.median(measured[ok] / (1 + rel[ok])))
+                source = "profondeur"
+        if zref is None and anchor is not None:
             zref = anchor
+            source = "secours"
         if zref is None:
+            source = "taille"
             zref = self._size_estimate(kind, u, v, fx)
             # Main ou visage de loin : trop petit pour se mesurer, on prend la distance du corps.
             if kind != "pose" and self.state.body_z is not None and (zref is None or self._small(kind, u, v)):
@@ -221,7 +231,16 @@ class Mirror:
 
         rays = cv2.undistortPoints(np.stack([u, v], axis=1).reshape(-1, 1, 2).astype(np.float64), model.K, model.dist).reshape(-1, 2)
         z = zref * (1 + rel)
-        return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True)
+        # Corps et mains : là où le capteur voit le point, on prend sa profondeur à lui (bras
+        # tendu vers le miroir, main devant le corps) plutôt que le relief estimé par MediaPipe,
+        # peu fiable. Un écart trop grand veut dire qu'on a mesuré le fond ou un autre objet.
+        share = 0.0
+        if kind in ("pose", "hands") and source == "profondeur":
+            tolerance = 0.6 if kind == "pose" else 0.15
+            use = ~np.isnan(measured) & (np.abs(measured - z) < tolerance)
+            z = np.where(use, measured, z)
+            share = float(use.mean())
+        return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share)
 
     #: En dessous (px), la taille d'une main ou d'un visage à l'image est trop imprécise.
     MIN_SIZE_PX = {"hands": 25.0, "face": 40.0}

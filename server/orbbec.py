@@ -52,7 +52,6 @@ class OrbbecCamera(Source):
         config.set_frame_aggregate_output_mode(ob.OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
         self.pipe.enable_frame_sync()
         self._up: np.ndarray | None = None
-        self._accel = self._start_accel()
         self.pipe.start(config)
 
         param = self.pipe.get_camera_param()
@@ -64,6 +63,13 @@ class OrbbecCamera(Source):
             dist=np.array([cd.k1, cd.k2, cd.p1, cd.p2, cd.k3, cd.k4, cd.k5, cd.k6], dtype=np.float64),
         )
         self.depth_to_color = np.array(param.transform.rot, dtype=np.float64).reshape(3, 3)
+        trans = getattr(param.transform, "transform", None) or getattr(param.transform, "trans", None)
+        if trans is not None:
+            log.info("profondeur → couleur : décalage %s mm (géré par le recalage du SDK)", np.round(np.array(trans, dtype=float), 1).tolist())
+        self._power_line_50hz()
+        # Accéléromètre seulement maintenant : son rappel utilise depth_to_color.
+        self._accel = self._start_accel()
+        self._logged_depth = False
         self.width, self.height = (ci.height, ci.width) if self.rotate in (90, 270) else (ci.width, ci.height)
         self._align = ob.AlignFilter(align_to_stream=ob.OBStreamType.COLOR_STREAM)
         self._aligner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
@@ -71,6 +77,17 @@ class OrbbecCamera(Source):
 
     def up(self) -> np.ndarray | None:
         return self._up
+
+    def _power_line_50hz(self) -> None:
+        """Anti-scintillement 50 Hz (secteur européen) : sinon des bandes sous les éclairages."""
+        prop = getattr(ob.OBPropertyID, "OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT", None)
+        if prop is None:
+            return
+        try:
+            self.pipe.get_device().set_int_property(prop, 1)  # 0 : désactivé, 1 : 50 Hz, 2 : 60 Hz
+            log.info("anti-scintillement 50 Hz")
+        except Exception as e:  # noqa: BLE001
+            log.warning("anti-scintillement non réglé : %s", e)
 
     def _depth_of(self, frames) -> np.ndarray | None:
         """Profondeur en mètres, alignée pixel à pixel sur l'image couleur."""
@@ -81,7 +98,11 @@ class OrbbecCamera(Source):
         if depth is None:
             return None
         d = np.frombuffer(depth.get_data(), np.uint16).reshape(depth.get_height(), depth.get_width())
-        return d.astype(np.float32) * (depth.get_depth_scale() / 1000.0)
+        out = d.astype(np.float32) * (depth.get_depth_scale() / 1000.0)
+        if not self._logged_depth:
+            self._logged_depth = True
+            log.info("profondeur recalée sur la couleur : %dx%d, %.0f %% de pixels mesurés", out.shape[1], out.shape[0], 100 * float(np.mean(out > 0)))
+        return out
 
     def _start_accel(self):
         """Accéléromètre à part, à sa fréquence la plus basse (le haut ne change pas vite)."""
