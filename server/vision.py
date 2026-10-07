@@ -441,6 +441,15 @@ class Pipeline:
             {"src": l.source, "mesuré": round(l.measured, 2), "z": round(float(np.median(l.xyz[:, 2])), 3)} if l is not None else None
             for l in lifted
         ]
+        floor_n = getattr(m.source, "floor_normal", None)
+        floor_h = getattr(m.source, "floor_height", None)
+        if kind == "pose" and lifted[0] is not None and floor_n is not None and floor_h is not None and self._debug[0]:
+            xyz = lifted[0].xyz
+            h = lambda i: round(float(xyz[i] @ floor_n + floor_h), 3)  # noqa: E731 - hauteur au-dessus du sol
+            self._debug[0]["hauteurs"] = {"nez": h(0), "yeux": round((h(2) + h(5)) / 2, 3), "épaules": round((h(11) + h(12)) / 2, 3), "chevilles": round((h(27) + h(28)) / 2, 3)}
+            eye = m.state.eye
+            if eye is not None:
+                self._debug[0]["œil_miroir"] = [round(float(v), 3) for v in eye]
         if kind == "pose":
             self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
             self._pose_pts = dets[0].points

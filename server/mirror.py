@@ -243,6 +243,23 @@ class Mirror:
             use = ~np.isnan(measured) & (np.abs(measured - z) < tolerance)
             z = np.where(use, measured, z)
             share = float(use.mean())
+        # Pieds sans profondeur (hors champ, ou trop près du sol) : on les pose sur le sol. Le
+        # point est là où la direction vue par la caméra rencontre le plan du sol (relevé à la
+        # hauteur de la cheville) : géométrie exacte, bien plus fiable que le relief deviné.
+        if kind == "pose" and len(points) > 32:
+            floor_n = getattr(self.source, "floor_normal", None)
+            floor_h = getattr(self.source, "floor_height", None)
+            if floor_n is not None and floor_h is not None:
+                undist = cv2.undistortPoints(np.stack([u, v], axis=1).reshape(-1, 1, 2).astype(np.float64), model.K, model.dist).reshape(-1, 2)
+                for i, above in self.FEET.items():
+                    if not np.isnan(measured[i]) and abs(measured[i] - z[i]) < 0.6:
+                        continue  # mesuré par le capteur : on garde
+                    ray = np.array([undist[i, 0], undist[i, 1], 1.0])
+                    denom = floor_n @ ray
+                    if denom < -1e-3:  # la direction descend vers le sol
+                        zi = -(floor_h - above) / denom
+                        if 0.3 < zi < 8:
+                            z[i] = zi
         # Lissage dans le temps : doux quand le point bouge peu, rapide quand il bouge vraiment.
         prev = self.state.z_smooth.get(key)
         if prev is not None and len(prev) == len(z):
@@ -250,6 +267,9 @@ class Mirror:
             z = prev + (z - prev) * k
         self.state.z_smooth[key] = z.copy()
         return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share)
+
+    #: Points des pieds MediaPipe et leur hauteur au-dessus du sol (m) : chevilles, talons, orteils.
+    FEET = {27: 0.08, 28: 0.08, 29: 0.04, 30: 0.04, 31: 0.03, 32: 0.03}
 
     #: En dessous (px), la taille d'une main ou d'un visage à l'image est trop imprécise.
     MIN_SIZE_PX = {"hands": 25.0, "face": 40.0}

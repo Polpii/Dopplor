@@ -51,9 +51,17 @@ class OrbbecCamera(Source):
         config = ob.Config()
         color_list = self.pipe.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
         depth_list = self.pipe.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
-        # YUYV : pas de décodage JPEG. Profondeur NFOV non binnée : 0,5–3,9 m, 30 fps.
+        # YUYV : pas de décodage JPEG. Profondeur grand angle (WFOV binnée, 120°, 0,25–2,9 m,
+        # 30 fps) : caméra à hauteur de poitrine, le mode étroit (75°) ne voyait pas les pieds
+        # d'une personne à 1,5 m, et les jambes partaient n'importe où.
         config.enable_stream(color_list.get_video_stream_profile(width, height, ob.OBFormat.YUYV, fps))
-        config.enable_stream(depth_list.get_video_stream_profile(640, 576, ob.OBFormat.Y16, fps))
+        try:
+            depth_profile = depth_list.get_video_stream_profile(512, 512, ob.OBFormat.Y16, fps)
+        except Exception:  # noqa: BLE001
+            log.warning("profondeur grand angle indisponible : mode étroit")
+            depth_profile = depth_list.get_video_stream_profile(640, 576, ob.OBFormat.Y16, fps)
+        config.enable_stream(depth_profile)
+        self.depth_mode = f"{depth_profile.get_width()}x{depth_profile.get_height()}"
         config.set_frame_aggregate_output_mode(ob.OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
         self.pipe.enable_frame_sync()
         self._up: np.ndarray | None = None
@@ -85,7 +93,9 @@ class OrbbecCamera(Source):
         self._floor_at = 0.0
         #: Hauteur de l'objectif au-dessus du sol (m), si le sol est vu.
         self.floor_height: float | None = None
-        log.info("%s : couleur %dx%d YUYV + profondeur 640x576 à %d fps (fx=%.1f)", self.name, ci.width, ci.height, fps, ci.fx)
+        #: Normale du sol (vers le haut, repère du capteur) : sert à poser les pieds sur le sol.
+        self.floor_normal: np.ndarray | None = None
+        log.info("%s : couleur %dx%d YUYV + profondeur %s à %d fps (fx=%.1f)", self.name, ci.width, ci.height, self.depth_mode, fps, ci.fx)
 
     def up(self) -> np.ndarray | None:
         return self._floor_up if self._floor_up is not None else self._up
@@ -143,6 +153,7 @@ class OrbbecCamera(Source):
         self._floor_up = n if first else (self._floor_up * 0.7 + n * 0.3)
         self._floor_up /= np.linalg.norm(self._floor_up)
         self.floor_height = height
+        self.floor_normal = self._floor_up.copy()
         if first:
             gap = None
             if self._up is not None:
