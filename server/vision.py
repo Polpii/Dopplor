@@ -99,9 +99,9 @@ def _delegate(name: str) -> mpt.BaseOptions.Delegate:
     return mpt.BaseOptions.Delegate.GPU if name == "GPU" else mpt.BaseOptions.Delegate.CPU
 
 
-def create_landmarker(kind: str, model: Path, delegate: str, count: int):
+def create_landmarker(kind: str, model: Path, delegate: str, count: int, image_mode: bool = False):
     base = mpt.BaseOptions(model_asset_path=str(model), delegate=_delegate(delegate))
-    video = mpv.RunningMode.VIDEO
+    video = mpv.RunningMode.IMAGE if image_mode else mpv.RunningMode.VIDEO
     if kind == "pose":
         return mpv.PoseLandmarker.create_from_options(
             mpv.PoseLandmarkerOptions(base_options=base, running_mode=video, num_poses=count)
@@ -166,6 +166,9 @@ class Task:
             try:
                 self.full = create_landmarker(self.kind, model, delegate, count)
                 self.zone = {z: create_landmarker(self.kind, model, delegate, 1) for z in self.zones}
+                # Corps : un second détecteur, sans suivi, pour regarder de temps en temps qui est
+                # au centre de l'image (voir Pipeline._recenter).
+                self.probe = create_landmarker(self.kind, model, delegate, 1, image_mode=True) if self.kind == "pose" else None
                 self.delegate = delegate
                 break
             except Exception as e:  # noqa: BLE001 - repli CPU si le GPU n'est pas utilisable
@@ -179,14 +182,18 @@ class Task:
         for lm in [self.full, *self.zone.values()]:
             for _ in range(2):
                 lm.detect_for_video(blank, self._next_ts(None))
+        if self.probe is not None:
+            for _ in range(2):
+                self.probe.detect(blank)
         log.info("%s prêt (%s)", self.kind, self.delegate)
 
     def close(self) -> None:
-        for lm in [self.full, *self.zone.values()]:
+        for lm in [self.full, *self.zone.values(), getattr(self, "probe", None)]:
             if lm is not None:
                 lm.close()
         self.full = None
         self.zone = {}
+        self.probe = None
 
     def _next_ts(self, frame_ts: int | None) -> int:
         # MediaPipe exige des timestamps strictement croissants pour chaque détecteur.
@@ -194,10 +201,18 @@ class Task:
         self._last_ts = ts
         return ts
 
-    def detect(self, frame: Frame, rois: list[Roi] | None) -> list[Detection]:
+    def detect(self, frame: Frame, rois: list[Roi] | None, band: tuple[int, int] | None = None) -> list[Detection]:
+        """`band` (corps) : colonnes [x0, x1) seules visibles, le reste de l'image noirci. L'image
+        garde sa taille : les points restent dans le repère de l'image entière et le suivi du
+        modèle continue normalement, mais quelqu'un sur le côté lui devient invisible."""
         ts = self._next_ts(int(frame.t * 1000))
         if rois is None or not self.zones:
-            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame.rgb)
+            rgb = frame.rgb
+            if band is not None:
+                x0, x1 = band
+                rgb = np.zeros_like(frame.rgb)
+                rgb[:, x0:x1] = frame.rgb[:, x0:x1]
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             return self._unpack(self.full.detect_for_video(image, ts))
         h, w = frame.rgb.shape[:2]
         out: list[Detection] = []
@@ -313,6 +328,11 @@ class Pipeline:
         self._pose_xyz: np.ndarray | None = None
         self._debug: list | None = None
         self._pose_pts: np.ndarray | None = None
+        #: Bande verticale (colonnes, px) que voit le modèle du corps, centrée sur la personne
+        #: suivie ; None : toute l'image (personne de suivi).
+        self._band: tuple[int, int] | None = None
+        self._band_lost = 0
+        self._probe_at = 0.0
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
     def start(self) -> "Pipeline":
@@ -342,9 +362,9 @@ class Pipeline:
             except Exception:  # noqa: BLE001 - une image ratée ne doit pas arrêter le miroir
                 log.exception("inférence")
 
-    def _run(self, kind: str, frame: Frame, rois: list[Roi] | None) -> list[Detection]:
+    def _run(self, kind: str, frame: Frame, rois: list[Roi] | None, band: tuple[int, int] | None = None) -> list[Detection]:
         t0 = time.perf_counter()
-        dets = self.tasks[kind].detect(frame, rois)
+        dets = self.tasks[kind].detect(frame, rois, band)
         if kind == "pose":
             dets = self._pick_person(dets)
         infer = (time.perf_counter() - t0) * 1000
@@ -395,6 +415,72 @@ class Pipeline:
         best = max(dets, key=score)
         self._focus = self._torso_center(best.points)
         return [best]
+
+    # --- Rester sur la personne du centre ------------------------------------------------------
+
+    #: La bande fait au moins cette part de la largeur de l'image, et au moins BAND_BODY fois la
+    #: largeur de la personne : on peut bouger, lever les bras, sans en sortir.
+    BAND_MIN = 0.55
+    BAND_BODY = 2.4
+    #: Toutes les RECENTER_S secondes, on regarde qui est au centre de l'image (CENTER_SPAN).
+    RECENTER_S = 2.0
+    CENTER_SPAN = (0.2, 0.8)
+
+    def _follow(self, frame: Frame, pose: np.ndarray | None) -> None:
+        """La bande suit la personne suivie (sans trembler : elle ne bouge que si la personne
+        s'en approche du bord), et de temps en temps on vérifie que c'est bien celle du centre."""
+        h, w = frame.rgb.shape[:2]
+        if pose is not None:
+            self._band_lost = 0
+            self._band = self._band_around(pose, w)
+        else:
+            self._band_lost += 1
+            if self._band_lost > 10:  # personne depuis un tiers de seconde : on rouvre tout
+                self._band = None
+        if frame.t - self._probe_at >= self.RECENTER_S:
+            self._probe_at = frame.t
+            self._recenter(frame, pose, w)
+
+    def _band_around(self, pose: np.ndarray, w: int) -> tuple[int, int]:
+        vis = pose[:, 3] > 0.5
+        xs = pose[vis, 0] if vis.sum() >= 4 else pose[:, 0]
+        cx = float((xs.min() + xs.max()) / 2) * w
+        width = min(w, max(self.BAND_MIN * w, self.BAND_BODY * float(xs.max() - xs.min()) * w))
+        prev = self._band
+        if prev is not None:
+            pc, pw = (prev[0] + prev[1]) / 2, prev[1] - prev[0]
+            # On ne bouge la bande que si la personne s'éloigne de son centre ou change de taille.
+            if abs(cx - pc) < 0.12 * pw and abs(width / pw - 1) < 0.2:
+                return prev
+        x0 = int(np.clip(cx - width / 2, 0, w - width))
+        return x0, int(x0 + width)
+
+    def _recenter(self, frame: Frame, pose: np.ndarray | None, w: int) -> None:
+        """Qui est au centre ? Détection seule (sans suivi) sur le milieu de l'image. Si c'est
+        quelqu'un d'autre que la personne suivie, plus proche du centre, la bande passe sur lui :
+        l'ancienne personne sort du champ du modèle, qui retrouve la nouvelle dès l'image
+        suivante. Le suivi n'est jamais interrompu, rien ne se voit à l'écran."""
+        task = self.tasks["pose"]
+        if task.probe is None:
+            return
+        a, b = (int(self.CENTER_SPAN[0] * w), int(self.CENTER_SPAN[1] * w))
+        rgb = np.zeros_like(frame.rgb)
+        rgb[:, a:b] = frame.rgb[:, a:b]
+        try:
+            found = task._unpack(task.probe.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)))
+        except Exception:  # noqa: BLE001
+            return
+        if not found:
+            return
+        center = self._torso_center(found[0].points)
+        if pose is not None:
+            tracked = self._torso_center(pose)
+            if np.hypot(*(center - tracked)) < 0.12 or abs(tracked[0] - 0.5) <= abs(center[0] - 0.5):
+                return  # c'est la même personne, ou celle suivie est déjà la plus au centre
+        log.info("recentrage sur la personne au centre (x %.2f)", center[0])
+        self._band = None
+        self._band = self._band_around(found[0].points, w)
+        self._focus = center
 
     @staticmethod
     def _torso_center(p: np.ndarray) -> np.ndarray:
@@ -473,8 +559,9 @@ class Pipeline:
         h, w = frame.rgb.shape[:2]
         pose = None
         if self.enabled["pose"]:
-            dets = self._run("pose", frame, None)
+            dets = self._run("pose", frame, None, self._band)
             pose = dets[0].points if dets else None
+            self._follow(frame, pose)
         # Vitesse des points du corps (unités normalisées / s) : agrandit les zones des gestes rapides.
         speed = np.zeros(33, dtype=np.float32)
         if pose is not None and self._prev_pose is not None:
