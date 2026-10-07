@@ -113,6 +113,9 @@ class MirrorState:
     #: Distance du corps (m) : celle des mains et du visage quand ils sont trop petits à l'image
     #: pour estimer la leur.
     body_z: float | None = None
+    #: Largeur d'épaules (m) de la personne, apprise quand on voit son visage (écart entre les
+    #: yeux) : bien plus juste que la moyenne pour estimer sa distance quand le visage est perdu.
+    shoulder_m: float | None = None
 
 
 class Mirror:
@@ -170,10 +173,11 @@ class Mirror:
 
     # --- 3D ----------------------------------------------------------------------------
 
-    def lift(self, kind: str, points: np.ndarray, depth: np.ndarray | None, key: str) -> Lifted | None:
+    def lift(self, kind: str, points: np.ndarray, depth: np.ndarray | None, key: str, zref: float | None = None) -> Lifted | None:
         """Pixels + profondeur → 3D caméra. La profondeur fixe la distance de la détection, la
         profondeur relative de MediaPipe donne le relief entre ses points (plus robuste qu'une
-        lecture point par point quand un bras passe devant le corps)."""
+        lecture point par point quand un bras passe devant le corps). `zref` impose la distance
+        (main accrochée au poignet du squelette, visage mesuré par l'écart des yeux)."""
         model = self.source.model
         if model is None:
             return None
@@ -183,8 +187,7 @@ class Mirror:
         # z MediaPipe : profondeur relative, à l'échelle de la largeur de l'image.
         rel = points[:, 2] * w_img / fx
 
-        zref = None
-        if depth is not None:
+        if depth is not None and zref is None:
             samples = []
             H, W = depth.shape
             # Une quarantaine de points suffisent (le visage en a 478) : la médiane est robuste.
@@ -224,10 +227,50 @@ class Mirror:
 
     def _size_estimate(self, kind: str, u: np.ndarray, v: np.ndarray, fx: float) -> float | None:
         (a, b), meters = self.SIZE_FALLBACK[kind]
+        if kind == "pose" and self.state.shoulder_m:
+            meters = self.state.shoulder_m
         if max(a, b) >= len(u):
             return None
         px = math.hypot(u[a] - u[b], v[a] - v[b])
         return fx * meters / px if px > 5 else None
+
+    #: Écart entre les centres des pupilles (m) : 63 mm en moyenne, ±4 mm chez l'adulte.
+    IPD = 0.063
+    #: Iris (MediaPipe Face Mesh avec iris) : centres des deux pupilles.
+    IRISES = (468, 473)
+
+    def face_distance(self, points: np.ndarray) -> float | None:
+        """Distance du visage (m, axe de la caméra) d'après l'écart entre les yeux. On regarde le
+        miroir : les yeux sont alignés avec la vitre, ce qui permet de corriger l'angle sous
+        lequel la caméra (sur le côté, tournée) les voit."""
+        model = self.source.model
+        pose = self._pose()
+        if model is None or pose is None or len(points) <= max(self.IRISES):
+            return None
+        R, _ = pose
+        w, h = self.source.width, self.source.height
+        a, b = self.IRISES
+        u, v = self.source.to_sensor(points[[a, b], 0] * w, points[[a, b], 1] * h)
+        px = math.hypot(u[1] - u[0], v[1] - v[0])
+        if px < 4:
+            return None
+        # Le vecteur entre les yeux est horizontal dans le plan du miroir : sa longueur vue par la
+        # caméra est celle de sa partie perpendiculaire à l'axe optique.
+        along = R.T @ np.array([1.0, 0.0, 0.0])
+        # Longueur en px = |(fx·Vx, fy·Vy)| / z : chaque axe du capteur a sa focale.
+        return float(self.IPD * math.hypot(model.K[0, 0] * along[0], model.K[1, 1] * along[1]) / px)
+
+    def learn_shoulders(self, pose_points: np.ndarray, z: float) -> None:
+        """Largeur d'épaules de la personne, à partir de sa distance (mesurée au visage)."""
+        model = self.source.model
+        if model is None or pose_points[11, 3] < 0.5 or pose_points[12, 3] < 0.5:
+            return
+        w, h = self.source.width, self.source.height
+        u, v = self.source.to_sensor(pose_points[[11, 12], 0] * w, pose_points[[11, 12], 1] * h)
+        meters = math.hypot(u[1] - u[0], v[1] - v[0]) * z / model.K[0, 0]
+        if 0.25 < meters < 0.5:
+            s = self.state.shoulder_m
+            self.state.shoulder_m = meters if s is None else s + (meters - s) * 0.05
 
     def to_mirror(self, xyz: np.ndarray) -> np.ndarray | None:
         pose = self._pose()

@@ -306,6 +306,10 @@ class Pipeline:
         self._depth_frame = -1
         self._depth: np.ndarray | None = None
         self._face_eye_at = 0.0
+        #: Squelette de l'image en cours en 3D (repère caméra) et ses points : les mains et le
+        #: visage s'y accrochent.
+        self._pose_xyz: np.ndarray | None = None
+        self._pose_pts: np.ndarray | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
     def start(self) -> "Pipeline":
@@ -410,7 +414,28 @@ class Pipeline:
         if m is None or not m.active or not dets:
             return dets, "camera"
         depth = self._depth_of(frame)
-        lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}") for d in dets]
+        # Distance imposée : une main prend celle du poignet du squelette (elle reste accrochée au
+        # bras), le visage celle donnée par l'écart entre ses yeux.
+        def zref(d: Detection) -> float | None:
+            pose = self._pose_xyz
+            if kind == "hands" and pose is not None and d.key:
+                wrist = {"left": 15, "right": 16}.get(d.key.split("/")[-1])
+                if wrist is not None and self._pose_pts is not None and self._pose_pts[wrist, 3] > 0.3:
+                    return float(pose[wrist, 2])
+            if kind == "face":
+                z = m.face_distance(d.points)
+                if z is not None:
+                    if self._pose_pts is not None:
+                        m.learn_shoulders(self._pose_pts, z)
+                    return z
+                if pose is not None:
+                    return float(pose[0, 2])
+            return None
+
+        lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}", zref(d)) for d in dets]
+        if kind == "pose":
+            self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
+            self._pose_pts = dets[0].points
         # L'œil : iris du visage (précis), sinon yeux du squelette.
         if kind == "face" and lifted[0] is not None and len(dets[0].points) > 473:
             m.update_eye((lifted[0].xyz[468] + lifted[0].xyz[473]) / 2)
