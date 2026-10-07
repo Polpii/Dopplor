@@ -19,12 +19,12 @@ import {
   features,
   hasHands,
   mirrored,
-  signDistance,
+  matchSign,
+  didTheMovement,
+  extent,
   signFeatures,
   progress,
   MATCH_DISTANCE,
-  MIN_TRAVEL,
-  travel,
   type Features,
   type Sign,
   type SignFrame,
@@ -64,8 +64,8 @@ interface LoadedSign {
   sign: Sign;
   features: Features[];
   mirror: Features[];
-  /** Chemin parcouru par les mains pendant le signe. */
-  travel: number;
+  /** Amplitude du geste du modèle. */
+  extent: number;
 }
 
 /** Un mot à apprendre et ses versions (la première est celle que montre le double). */
@@ -251,10 +251,7 @@ export class SignLanguageMode {
       this.setScore(0);
       return;
     }
-    const distance = this.distance(target, live);
-    // Le mouvement : sur la fin du direct, aussi longue que le signe, a-t-on assez bougé ?
-    const model = target.variants[0];
-    const moved = travel(live.slice(-(model.features.length + 8))) >= MIN_TRAVEL * model.travel;
+    const { distance, moved } = this.compare(target, live);
     // Bonne pose mais sans le mouvement : la jauge s'arrête avant la fin.
     this.setScore(moved ? progress(distance) : Math.min(progress(distance), 0.75));
     this.hint.textContent = !moved && progress(distance) > 0.75 ? "Bonne position… maintenant fais le mouvement" : "Imite ton double doré";
@@ -268,16 +265,24 @@ export class SignLanguageMode {
     let other: { label: string; distance: number } | null = null;
     for (const lesson of this.learned) {
       if (lesson === target) continue;
-      const d = this.distance(lesson, live);
-      if (d <= RECOGNIZE_DISTANCE && (!other || d < other.distance)) other = { label: lesson.label, distance: d };
+      const { distance: d, moved } = this.compare(lesson, live);
+      if (moved && d <= RECOGNIZE_DISTANCE && (!other || d < other.distance)) other = { label: lesson.label, distance: d };
     }
     this.showRecognized(other?.label ?? null);
   }
 
-  /** Distance à la version du mot la plus proche, faite de la main droite ou de la gauche. */
-  private distance(lesson: Lesson, live: Features[]): number {
-    let best = Infinity;
-    for (const v of lesson.variants) best = Math.min(best, signDistance(v.features, live), signDistance(v.mirror, live));
+  /**
+   * Version du mot la plus proche (de la main droite ou de la gauche) : sa distance, et si le
+   * mouvement a vraiment été fait (durée et amplitude, voir didTheMovement).
+   */
+  private compare(lesson: Lesson, live: Features[]): { distance: number; moved: boolean } {
+    let best = { distance: Infinity, moved: false };
+    for (const v of lesson.variants) {
+      for (const template of [v.features, v.mirror]) {
+        const m = matchSign(template, live);
+        if (m.distance < best.distance) best = { distance: m.distance, moved: didTheMovement(template, v.extent, live, m) };
+      }
+    }
     return best;
   }
 
@@ -409,10 +414,10 @@ export class SignLanguageMode {
     const signs = await this.store.list().catch(() => [] as Sign[]);
     const byLabel = new Map<string, Lesson>();
     for (const sign of signs) {
-      const loaded: LoadedSign = { sign, features: signFeatures(sign), mirror: [], travel: 0 };
+      const loaded: LoadedSign = { sign, features: signFeatures(sign), mirror: [], extent: 0 };
       if (loaded.features.length < 3) continue;
       loaded.mirror = loaded.features.map(mirrored);
-      loaded.travel = travel(loaded.features);
+      loaded.extent = extent(loaded.features);
       const key = plain(sign.label);
       const lesson = byLabel.get(key) ?? { label: sign.label.trim(), variants: [] };
       if (spellingScore(sign.label) > spellingScore(lesson.label)) lesson.label = sign.label.trim();

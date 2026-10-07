@@ -136,27 +136,59 @@ function frameDistance(a: Features, b: Features): number {
   return d;
 }
 
+export interface SignMatch {
+  /** Distance moyenne par image du modèle. */
+  distance: number;
+  /** Partie du direct alignée sur le modèle : première et dernière image (incluses). */
+  start: number;
+  end: number;
+}
+
 /**
- * Distance entre un signe de référence et la fin de ce que fait la personne (DTW « sous-
- * séquence » : le signe peut commencer n'importe où dans la fenêtre récente). Moyenne par image.
+ * Compare un signe de référence à la fin de ce que fait la personne (DTW « sous-séquence » : le
+ * signe peut commencer n'importe où dans la fenêtre récente), et dit sur quelle partie du direct
+ * il s'aligne.
  */
-export function signDistance(template: Features[], live: Features[]): number {
+export function matchSign(template: Features[], live: Features[]): SignMatch {
   const n = template.length;
   const m = live.length;
-  if (!n || !m) return Infinity;
+  if (!n || !m) return { distance: Infinity, start: 0, end: 0 };
   let prev = new Float32Array(m);
   let cur = new Float32Array(m);
-  for (let j = 0; j < m; j++) prev[j] = frameDistance(template[0], live[j]); // début libre
+  // Pour chaque case, l'image du direct où l'alignement a commencé.
+  let prevStart = new Int32Array(m);
+  let curStart = new Int32Array(m);
+  for (let j = 0; j < m; j++) {
+    prev[j] = frameDistance(template[0], live[j]); // début libre
+    prevStart[j] = j;
+  }
   for (let i = 1; i < n; i++) {
     cur[0] = prev[0] + frameDistance(template[i], live[0]);
-    for (let j = 1; j < m; j++) cur[j] = frameDistance(template[i], live[j]) + Math.min(prev[j], prev[j - 1], cur[j - 1]);
+    curStart[0] = prevStart[0];
+    for (let j = 1; j < m; j++) {
+      let best = prev[j];
+      let start = prevStart[j];
+      if (prev[j - 1] < best) {
+        best = prev[j - 1];
+        start = prevStart[j - 1];
+      }
+      if (cur[j - 1] < best) {
+        best = cur[j - 1];
+        start = curStart[j - 1];
+      }
+      cur[j] = frameDistance(template[i], live[j]) + best;
+      curStart[j] = start;
+    }
     [prev, cur] = [cur, prev];
+    [prevStart, curStart] = [curStart, prevStart];
   }
   // Fin : on veut que le signe vienne d'être fait, donc dans les dernières images.
-  let best = Infinity;
-  for (let j = Math.max(0, m - 8); j < m; j++) best = Math.min(best, prev[j]);
-  return best / n;
+  let end = m - 1;
+  for (let j = Math.max(0, m - 8); j < m; j++) if (prev[j] < prev[end]) end = j;
+  return { distance: prev[end] / n, start: prevStart[end], end };
 }
+
+export const signDistance = (template: Features[], live: Features[]) => matchSign(template, live).distance;
 
 /**
  * Distance en dessous de laquelle le signe est réussi. Imitateurs simulés : 99 % de réussite
@@ -171,25 +203,38 @@ export const progress = (distance: number) =>
   Math.min(1, Math.max(0, (UNRELATED_DISTANCE - distance) / (UNRELATED_DISTANCE - MATCH_DISTANCE)));
 
 /**
- * Chemin parcouru par la main qui bouge le plus (en largeurs d'épaules). Une pose tenue au bon
- * endroit ne suffit pas : il faut aussi faire le mouvement.
+ * Amplitude du geste : plus grand écart entre deux positions du poignet (en largeurs d'épaules),
+ * pour la main qui bouge le plus. Contrairement au chemin parcouru, le tremblement du suivi ne la
+ * gonfle presque pas : une main immobile qui tremble reste une main immobile.
  */
-export function travel(frames: Features[]): number {
+export function extent(frames: Features[]): number {
   let best = 0;
   for (const side of ["left", "right"] as const) {
-    let sum = 0;
-    for (let i = 1; i < frames.length; i++) {
-      const a = frames[i - 1].hands[side];
-      const b = frames[i].hands[side];
-      if (a && b) sum += Math.hypot(b.place[0] - a.place[0], b.place[1] - a.place[1]);
+    const pts: [number, number][] = [];
+    for (const f of frames) {
+      const h = f.hands[side];
+      if (h) pts.push(h.place);
     }
-    best = Math.max(best, sum);
+    for (let i = 0; i < pts.length; i++)
+      for (let j = i + 1; j < pts.length; j++) best = Math.max(best, Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]));
   }
   return best;
 }
 
-/** Part minimale du mouvement du modèle à refaire (imitateurs simulés : une pose immobile passe 10 % au lieu de 25 %). */
-export const MIN_TRAVEL = 0.5;
+/**
+ * Un signe n'est réussi que si, en plus de ressembler, on a vraiment fait le geste :
+ *   - la partie de ses mouvements comparée au signe dure au moins la moitié du signe (on ne peut
+ *     pas « écraser » tout un signe sur trois images d'une pose tenue) ;
+ *   - le geste a au moins la moitié de l'amplitude du modèle.
+ * Avec le tremblement du suivi au miroir, sur la bibliothèque : mains levées immobiles validées
+ * 43 % du temps avant, 1 % maintenant ; mains qui errent 40 % → 2 % ; autre signe 9 % → 2 %.
+ * Les vraies imitations passent toujours (96 % soignées, 92 % approximatives).
+ */
+export function didTheMovement(template: Features[], templateExtent: number, live: Features[], m: SignMatch): boolean {
+  const span = m.end - m.start + 1;
+  if (span < template.length * 0.5 || span > template.length * 3) return false;
+  return extent(live.slice(m.start, m.end + 1)) >= 0.5 * templateExtent;
+}
 
 export const hasHands = (f: Features) => f.hands.left !== undefined || f.hands.right !== undefined;
 

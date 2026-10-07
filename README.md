@@ -36,7 +36,11 @@ A few things that took some trial and error:
 
 ## Modes
 
-To open the mode menu, hold your hand palm up with the fingertips together, then open it in one go while lifting it a little, like a flower blooming (the HoloLens "bloom"). A small light shows at your fingertips while they're together, and the menu blooms out of them. The hand shape is read in 3D: seen from the front, a palm-up hand has its fingers pointing at the mirror and looks squashed flat, and in 2D it would pass for a fist. The thresholds were tuned on about 100 LSF videos, which are full of hands opening: over 4.5 minutes of continuous signing it fired 4 times, two of them on signs that are nearly the gesture (livre, couscous). Opening the hand facing the mirror or the floor, slowly, or while lowering it doesn't open anything.
+To open the mode menu, close your fist with the hand raised and hold it a moment: a ring charges up around it and turns gold when it's ready. Then open the hand in one go, fingers up, as if throwing the menu to the sky. The menu shoots out of your fingers.
+
+Holding the fist matters. A fist opening upwards is everywhere in sign language: on about 100 LSF videos (4.5 minutes of signing), a plain fist-then-open fired about 60 times. Fists in signs never stay still, though, so asking for a fist held still for 0.4 s brings that down to 5, and 95% of simulated real gestures still go through. Opening the hand slowly, downwards, at hip level, or after waving the fist around does nothing. After you close the menu with your fist, opening the hand again won't relaunch it until you charge a new fist.
+
+An earlier version looked at which way the palm faces, using the depth MediaPipe estimates for each point. From where people stand at the mirror, a hand is only a few dozen pixels wide and that depth is too noisy: the palm direction flipped from frame to frame.
 
 Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. The menu doesn't go away on its own when you lower your hand: close your fist and keep it closed, and the menu folds back into your hand (open the fist early to cancel). It's also put away if nobody is in front of the mirror anymore. `M` opens it from the keyboard.
 
@@ -47,7 +51,7 @@ The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same
 
 There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). Lingua Libre also has a lot of library vocabulary (conseiller, réservation…), so only about 30 simple everyday words are kept (`WORDS` in the script): greetings, please and thank you, questions, a few verbs and some animals. They're in `data/lsf/`. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
 
-The movement is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. It also accepts the sign done with the other hand, and it wants the movement, not just the right pose. The threshold was tuned on simulated imitators: other body proportions, other speed, sloppier hands. That's a starting point; it still needs tuning with real people.
+The movement is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. It also accepts the sign done with the other hand, and it wants the movement, not just the right pose. The threshold was tuned on simulated imitators: other body proportions, other speed, sloppier hands. Looking like the sign isn't enough, you have to actually do it. The part of your movement matched to the sign has to last at least half the sign, so a held pose can't be squeezed onto it. The gesture also has to cover at least half the amplitude of the original, measured as how far the wrist travels from end to end. Measuring the path length instead was fooled by tracking jitter: with realistic jitter, simply holding your hands up validated the sign 43% of the time and idly moving them 40%. It's 1% and 2% now, while imitations still pass 92 to 96% of the time. This still needs tuning with real people; `scripts/record.py` records what the mirror sees so it can be replayed.
 
 You can add your own signs: someone who knows LSF presses `R`, signs once in front of the mirror and names it. They're stored by the Python server in `signs/`.
 
@@ -106,7 +110,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
 | `↑` `↓` | more / less prediction (latency compensation) |
-| `M` | mode menu (or the bloom gesture) |
+| `M` | mode menu (or hold a fist, then throw it open) |
 | `R` `←` `→` `Suppr` | sign language mode: record a sign, previous / next, delete |
 | `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
@@ -130,7 +134,7 @@ src/
   calibration.ts     calibration panel
   modes/
     menu.ts          mode menu driven by the hand
-    gestures.ts      hand shape in 3D (fist, pinch, palm up), the bloom gesture
+    gestures.ts      hand shape (fist, pinch, fingers up), the charge-and-throw gesture
     sign-language.ts sign language mode (learning, golden double, recording)
     signs.ts         sign recording, comparison (DTW) and storage
   scene.ts           tracking, smoothing, expressions

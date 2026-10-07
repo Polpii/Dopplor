@@ -1,7 +1,7 @@
 // Menu des modes, piloté à la main et dessiné par le moteur néon (pas d'effets CSS coûteux).
 //
-//   Ouvrir : main paume vers le ciel, bouts des doigts réunis, qui s'ouvre d'un coup en montant
-//            un peu (voir BloomGesture) ; le menu éclot du bout des doigts. Touche M.
+//   Ouvrir : tenir le poing fermé un instant, main levée (une lueur s'y charge), puis ouvrir la
+//            main d'un coup vers le haut : le menu jaillit des doigts (voir BloomGesture). Touche M.
 //   Choisir : garder l'index sur un mode (~0,8 s) ou pincer pouce + index.
 //   Fermer : fermer le poing et le garder fermé (le menu se replie dans la main).
 //
@@ -55,9 +55,9 @@ interface Placed {
 
 export class Menu {
   private bloom = new BloomGesture();
-  /** Lueur au bout des doigts réunis (le bouton, avant l'éclosion), en px d'écran ; `level`
-   * suit la présence du bouton en douceur (apparition et disparition fondues). */
-  private seed = { x: 0, y: 0, r: 0, level: 0, target: 0 };
+  /** Lueur qui se charge dans le poing avant le lancer, en px d'écran ; `level` suit la présence
+   * du poing en douceur (apparition et disparition fondues), `charge` va de 0 à 1 (prêt). */
+  private seed = { x: 0, y: 0, r: 0, level: 0, target: 0, charge: 0 };
   private isOpen = false;
   private openedAt = 0;
   private closedAt = -Infinity;
@@ -119,7 +119,9 @@ export class Menu {
     const hands = handStates(scene, now, w, h);
     for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
-      const { triggered, seed } = this.bloom.update(hands, now);
+      const { triggered, charging } = this.bloom.update(hands, now);
+      // La lueur n'apparaît qu'une fois le poing tenu un peu : pas pour les poings de passage.
+      const seed = charging && charging.charge > 0.3 ? charging.hand : null;
       const ready = now - this.closedAt > 800;
       if (triggered && ready) {
         this.seed.target = 0;
@@ -129,8 +131,9 @@ export class Menu {
       }
       this.seed.target = seed && ready ? 1 : 0;
       if (seed && ready) {
-        const [x, y] = this.toScreen(...seed.tips);
-        const r = this.palmOnScreen(seed) * 0.35;
+        const [x, y] = this.toScreen(...seed.palm);
+        const r = this.palmOnScreen(seed) * 1.1;
+        this.seed.charge = charging!.charge;
         // La lueur suit les doigts sans à-coups.
         const k = this.seed.level < 0.05 ? 1 : 0.5;
         this.seed.x += (x - this.seed.x) * k;
@@ -290,11 +293,15 @@ export class Menu {
     }
 
     if (this.seed.level > 0.01) {
-      // Le bouton : une petite lueur qui respire au bout des doigts réunis.
-      const { x, y, r, level } = this.seed;
-      const breath = 1 + 0.12 * Math.sin(now / 140);
-      out.dot(x, y, width * 3.2 * breath, COLOR.cursor, 1.4 * level);
-      ring(out, x, y, Math.max(r, width * 6) * breath, 0, 1, width * 0.7, COLOR.idle, 0.5 * level);
+      // Le poing se charge : un anneau se remplit autour, la lueur au centre grandit ; une fois
+      // plein, il respire (prêt à lancer).
+      const { x, y, level, charge } = this.seed;
+      const r = Math.max(this.seed.r, width * 8);
+      const ready = charge >= 1;
+      const breath = ready ? 1 + 0.1 * Math.sin(now / 110) : 1;
+      out.dot(x, y, width * (1.5 + 2.5 * charge) * breath, COLOR.cursor, (0.6 + 1.0 * charge) * level);
+      ring(out, x, y, r * breath, 0, 1, width * 0.6, COLOR.idle, 0.3 * level);
+      ring(out, x, y, r * breath, 0, charge, width * 1.5, ready ? COLOR.progress : COLOR.cursor, 1.3 * level);
     }
     if (!this.isOpen) return;
 

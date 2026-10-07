@@ -1,10 +1,11 @@
 // Lecture des gestes de la main à partir des 21 points MediaPipe, et détection du geste d'appel
-// du menu (le « bloom » de la HoloLens) : main paume vers le ciel, bouts des doigts réunis, qui
-// s'ouvre d'un coup en montant un peu.
+// du menu : on tient le poing fermé un instant (il se charge), puis on ouvre la main d'un coup
+// vers le haut (on lance le menu vers le ciel).
 //
 // La forme de la main se lit en 3D (MediaPipe donne une profondeur relative pour chaque point) :
-// une main paume vers le ciel, vue de face par la caméra, a les doigts dirigés vers le miroir et
-// paraît toute « écrasée » à plat ; en 2D elle ressemblerait à un poing.
+// une main ouverte doigts vers la caméra paraît « écrasée » à plat ; en 2D elle ressemblerait à
+// un poing. L'orientation de la paume, elle, n'est pas utilisée : de loin, la profondeur estimée
+// est trop bruitée pour savoir de quel côté elle est tournée.
 import { Scene, type Track } from "../scene";
 import { STRIDE } from "../vision/protocol";
 
@@ -32,6 +33,14 @@ export interface HandState {
   open: boolean;
   /** Vrai poing : les quatre doigts repliés. Pointer de l'index n'est pas un poing. */
   fist: boolean;
+  /** Poing (trois doigts repliés suffisent). */
+  closed: boolean;
+  /** Distance moyenne des bouts des doigts au poignet, en tailles de paume : ~0,8 poing, ~2 main ouverte. */
+  reach: number;
+  /** Direction des doigts (poignet → bout du majeur) vers le haut de l'image, de -1 à 1. */
+  fingersUp: number;
+  /** Hauteur moyenne des bouts des doigts (px de l'image). */
+  tipsY: number;
   /** Pouce et index qui se touchent. */
   pinch: boolean;
   /** Écartement des cinq bouts de doigts autour de leur centre, en tailles de paume :
@@ -84,6 +93,7 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
     let n = cross(sub(at(INDEX_BASE), wrist), sub(at(PINKY_BASE), wrist));
     if (hand.side === "left") n = [-n[0], -n[1], -n[2]];
     const palmUp = -n[1] / (len(n) || 1);
+    const dir = sub(at(12), wrist);
 
     let bodyScale = palmSize * 3.5;
     let height = wrist[1] / bodyScale;
@@ -100,6 +110,10 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
       extended,
       open: extended >= 3,
       fist: curled === 4,
+      closed: curled >= 3,
+      reach: FINGERS.reduce((sum, [tip]) => sum + dist(at(tip), wrist), 0) / 4 / palmSize,
+      fingersUp: -dir[1] / (Math.hypot(dir[0], dir[1]) || 1),
+      tipsY: (at(8)[1] + at(12)[1] + at(16)[1] + at(20)[1]) / 4,
       pinch: dist(at(THUMB_TIP), at(INDEX_TIP)) < palmSize * 0.35,
       spread,
       palmUp,
@@ -117,58 +131,112 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
 }
 
 /**
- * Réglages du geste, mesurés sur 96 vidéos de LSF (4,5 min de signes, pleines d'ouvertures de
- * main : 4 déclenchements, dont « livre » et « couscous » qui font presque le geste) et sur des
- * gestes simulés à partir de mains réelles (100 % reconnus, même une ouverture lente de 0,45 s).
+ * Réglages du geste, mesurés sur 96 vidéos de LSF (4,5 min de signes) et sur des gestes simulés
+ * à partir de vraies mains. Un poing qui s'ouvre vers le haut, c'est partout en langue des signes
+ * (~60 fois en 4,5 min) ; mais les poings y sont toujours de passage. Exiger un poing tenu un
+ * instant avant de l'ouvrir ramène ça à 5, et 95 % des vrais gestes passent.
  */
-const BUD = 0.3; // doigts réunis
-const OPEN = 0.7; // doigts écartés
-const PALM_UP = 0.3; // paume tournée vers le ciel (au moins ~20°)
-const RISE = 0.05; // la main monte un peu en s'ouvrant (largeurs d'épaules)
-const WINDOW_MS = 500; // du bouton à la fleur
-const MAX_HEIGHT = 0.9; // main au-dessus du bas de la poitrine
-/** Bouton tenu ce temps : une petite lueur apparaît au bout des doigts (on sent que ça va s'ouvrir). */
-const SEED_MS = 150;
+const HOLD_MS = 400; // poing tenu avant de lancer
+const HOLD_STILL = 0.15; // pendant qu'on le tient, le poignet reste dans ce rayon (largeurs d'épaules)
+/** Ouverture brusque : les doigts passent de « poing » à « main ouverte » en moins de ça. Une main
+ * qui s'ouvre lentement ne lance rien. */
+const FLICK_MS = 300;
+const TIGHT_REACH = 1.1; // doigts encore serrés
+const OPEN_REACH = 1.6; // doigts déployés
+const TIPS_RISE = 0.3; // les bouts des doigts montent d'au moins ça (tailles de paume)
+const WRIST_DROP = 0.05; // le poignet ne descend pas (tolérance, largeurs d'épaules)
+const FINGERS_UP = 0.3; // main ouverte doigts vers le haut (vers le ciel)
+const MAX_HEIGHT = 1.0; // main au-dessus des hanches
+
+interface FistState {
+  /** Début du poing tenu en cours (-1 : pas de poing). */
+  since: number;
+  /** Position du poignet au début du poing (immobilité). */
+  x0: number;
+  y0: number;
+  /** Dernière image où les doigts étaient encore serrés (poing), et l'état à ce moment-là. */
+  lastClosed: number;
+  heldAtLast: boolean;
+  tipsYAtLast: number;
+  wristYAtLast: number;
+  misses: number;
+  /** Faux après une fermeture du menu au poing : il faut d'abord rouvrir la main. */
+  armed: boolean;
+}
 
 /**
- * Le « bloom » : la main, bouts des doigts réunis, s'ouvre d'un coup paume vers le ciel en
- * montant légèrement. Ouvrir la main paume vers soi ou vers le sol, l'ouvrir lentement, ou lever
- * une main déjà ouverte ne déclenche rien.
+ * « Charger, lancer » : poing fermé tenu un instant, main levée (il se charge), puis la main
+ * s'ouvre d'un coup, doigts vers le haut. Ouvrir la main lentement, vers le bas, sans l'avoir
+ * tenue fermée, ou les poings de passage des signes ne déclenchent rien.
  */
 export class BloomGesture {
-  private hands = new Map<string, { hist: { t: number; spread: number; y: number }[]; budSince: number }>();
+  private hands = new Map<string, FistState>();
+  private disarmed = new Set<string>();
 
-  update(hands: HandState[], now: number): { triggered: HandState | null; seed: HandState | null } {
+  /** `charging` : la main dont le poing se charge, et où en est la charge (0 → 1). */
+  update(hands: HandState[], now: number): { triggered: HandState | null; charging: { hand: HandState; charge: number } | null } {
     let triggered: HandState | null = null;
-    let seed: HandState | null = null;
+    let charging: { hand: HandState; charge: number } | null = null;
     const seen = new Set<string>();
     for (const hand of hands) {
       const key = hand.track.key;
       seen.add(key);
-      const s = this.hands.get(key) ?? { hist: [], budSince: -1 };
-      s.hist.push({ t: now, spread: hand.spread, y: hand.wristPx[1] });
-      while (s.hist.length && now - s.hist[0].t > WINDOW_MS) s.hist.shift();
-      this.hands.set(key, s);
+      let s = this.hands.get(key);
+      if (!s) {
+        s = { since: -1, x0: 0, y0: 0, lastClosed: -Infinity, heldAtLast: false, tipsYAtLast: 0, wristYAtLast: 0, misses: 0, armed: !this.disarmed.has(key) };
+        this.hands.set(key, s);
+      }
       const raised = !hand.anchored || hand.height < MAX_HEIGHT;
+      const [x, y] = hand.wristPx;
 
-      if (hand.spread <= BUD && raised) {
-        if (s.budSince < 0) s.budSince = now;
-        if (now - s.budSince >= SEED_MS && hand.palmUp > -0.3) seed = hand;
-      } else s.budSince = -1;
-
-      if (hand.spread >= OPEN && hand.palmUp >= PALM_UP && raised) {
-        const bloomed = s.hist.some((p) => p.spread <= BUD && (p.y - hand.wristPx[1]) / hand.bodyScale >= RISE);
-        if (bloomed) {
+      if (hand.closed && raised) {
+        // Poing (re)commencé, ou qui a trop bougé : la charge repart de zéro.
+        if (s.since < 0 || Math.hypot(x - s.x0, y - s.y0) / hand.bodyScale > HOLD_STILL) {
+          s.since = now;
+          s.x0 = x;
+          s.y0 = y;
+        }
+        s.misses = 0;
+      } else if (s.since >= 0 && ++s.misses > 1) s.since = -1; // une image ratée au milieu d'un poing est tolérée
+      // Dernier instant où les doigts étaient encore serrés : point de départ du lancer.
+      if (hand.reach <= TIGHT_REACH && raised && s.since >= 0) {
+        s.lastClosed = now;
+        s.heldAtLast = now - s.since >= HOLD_MS;
+        s.tipsYAtLast = hand.tipsY;
+        s.wristYAtLast = y;
+      }
+      if (hand.closed && raised) {
+        const charge = Math.min(1, (now - s.since) / HOLD_MS);
+        if (s.armed && (!charging || charge > charging.charge)) charging = { hand, charge };
+        continue;
+      }
+      if (!hand.closed) {
+        if (!s.armed && hand.open) s.armed = true;
+        if (
+          s.armed &&
+          hand.open &&
+          hand.reach >= OPEN_REACH &&
+          raised &&
+          s.heldAtLast &&
+          now - s.lastClosed <= FLICK_MS &&
+          (s.tipsYAtLast - hand.tipsY) / hand.palmSize >= TIPS_RISE &&
+          (s.wristYAtLast - y) / hand.bodyScale >= -WRIST_DROP &&
+          hand.fingersUp >= FINGERS_UP
+        ) {
           triggered = hand;
-          s.hist = [];
+          s.heldAtLast = false;
+          s.since = -1;
         }
       }
     }
     for (const key of [...this.hands.keys()]) if (!seen.has(key)) this.hands.delete(key);
-    return { triggered, seed: triggered ? null : seed };
+    for (const key of [...this.disarmed]) if (!seen.has(key)) this.disarmed.delete(key);
+    return { triggered, charging: triggered ? null : charging };
   }
 
+  /** Après une fermeture du menu au poing : les mains présentes doivent se rouvrir avant de relancer. */
   reset(): void {
+    this.disarmed = new Set(this.hands.keys());
     this.hands.clear();
   }
 }
