@@ -110,6 +110,9 @@ class MirrorState:
     up_used: np.ndarray | None = None
     #: Distance de référence par type, gardée quand la profondeur manque un instant.
     last_zref: dict = field(default_factory=dict)
+    #: Distance du corps (m) : celle des mains et du visage quand ils sont trop petits à l'image
+    #: pour estimer la leur.
+    body_z: float | None = None
 
 
 class Mirror:
@@ -197,14 +200,27 @@ class Mirror:
             if len(samples) >= 3:
                 zref = float(np.median(samples))
         if zref is None:
-            zref = self._size_estimate(kind, u, v, fx) or self.state.last_zref.get(key)
+            zref = self._size_estimate(kind, u, v, fx)
+            # Main ou visage de loin : trop petit pour se mesurer, on prend la distance du corps.
+            if kind != "pose" and self.state.body_z is not None and (zref is None or self._small(kind, u, v)):
+                zref = self.state.body_z
+            zref = zref or self.state.last_zref.get(key)
         if zref is None:
             return None
         self.state.last_zref[key] = zref
+        if kind == "pose":
+            self.state.body_z = zref
 
         rays = cv2.undistortPoints(np.stack([u, v], axis=1).reshape(-1, 1, 2).astype(np.float64), model.K, model.dist).reshape(-1, 2)
         z = zref * (1 + rel)
         return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True)
+
+    #: En dessous (px), la taille d'une main ou d'un visage à l'image est trop imprécise.
+    MIN_SIZE_PX = {"hands": 25.0, "face": 40.0}
+
+    def _small(self, kind: str, u: np.ndarray, v: np.ndarray) -> bool:
+        (a, b), _ = self.SIZE_FALLBACK[kind]
+        return max(a, b) >= len(u) or math.hypot(u[a] - u[b], v[a] - v[b]) < self.MIN_SIZE_PX.get(kind, 0)
 
     def _size_estimate(self, kind: str, u: np.ndarray, v: np.ndarray, fx: float) -> float | None:
         (a, b), meters = self.SIZE_FALLBACK[kind]
