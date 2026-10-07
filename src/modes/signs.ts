@@ -136,6 +136,25 @@ function frameDistance(a: Features, b: Features): number {
   return d;
 }
 
+/**
+ * Distances d'une image du direct à chaque image d'un modèle, calculées une seule fois : la
+ * comparaison est refaite plusieurs fois par seconde sur une fenêtre qui glisse, presque toutes
+ * les images du direct ont déjà été comparées la fois d'avant (c'était 95 % du temps de calcul).
+ */
+const distanceCache = new WeakMap<Features, WeakMap<Features[], Float32Array>>();
+
+function distancesTo(template: Features[], f: Features): Float32Array {
+  let byTemplate = distanceCache.get(f);
+  if (!byTemplate) distanceCache.set(f, (byTemplate = new WeakMap()));
+  let d = byTemplate.get(template);
+  if (!d) {
+    d = new Float32Array(template.length);
+    for (let i = 0; i < template.length; i++) d[i] = frameDistance(template[i], f);
+    byTemplate.set(template, d);
+  }
+  return d;
+}
+
 export interface SignMatch {
   /** Distance moyenne par image du modèle. */
   distance: number;
@@ -153,17 +172,18 @@ export function matchSign(template: Features[], live: Features[]): SignMatch {
   const n = template.length;
   const m = live.length;
   if (!n || !m) return { distance: Infinity, start: 0, end: 0 };
+  const d = live.map((f) => distancesTo(template, f)); // d[j][i] : image j du direct, i du modèle
   let prev = new Float32Array(m);
   let cur = new Float32Array(m);
   // Pour chaque case, l'image du direct où l'alignement a commencé.
   let prevStart = new Int32Array(m);
   let curStart = new Int32Array(m);
   for (let j = 0; j < m; j++) {
-    prev[j] = frameDistance(template[0], live[j]); // début libre
+    prev[j] = d[j][0]; // début libre
     prevStart[j] = j;
   }
   for (let i = 1; i < n; i++) {
-    cur[0] = prev[0] + frameDistance(template[i], live[0]);
+    cur[0] = prev[0] + d[0][i];
     curStart[0] = prevStart[0];
     for (let j = 1; j < m; j++) {
       let best = prev[j];
@@ -176,7 +196,7 @@ export function matchSign(template: Features[], live: Features[]): SignMatch {
         best = cur[j - 1];
         start = curStart[j - 1];
       }
-      cur[j] = frameDistance(template[i], live[j]) + best;
+      cur[j] = d[j][i] + best;
       curStart[j] = start;
     }
     [prev, cur] = [cur, prev];

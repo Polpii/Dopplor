@@ -37,6 +37,8 @@ const LEAD_STEP = 10;
 /** Plafond du rendu continu (prédiction) quand l'écran n'impose plus de synchronisation. */
 const MAX_RENDER_FPS = 144;
 const LEAD_MAX = 200;
+/** Cadence du double doré (langue des signes, danse). */
+const GHOST_FPS = 60;
 function loadLead(): number {
   try {
     const v = Number(localStorage.getItem(LEAD_KEY));
@@ -160,6 +162,7 @@ async function main(): Promise<void> {
   let drawnGhost = -1;
   let drawnSkeleton = false;
   let lastDraw = 0;
+  let lastGhost = 0;
   let draws = 0;
   let latency = 0;
   // Recalage caméra → reflet (échelle + décalage, px CSS), ajusté sur le corps de la personne vu
@@ -211,10 +214,15 @@ async function main(): Promise<void> {
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
-    // Le double du mode langue des signes avance à chaque image affichée (mouvement fluide).
-    if (signs.animating && due) signs.animate(now);
-    if (dance.animating && due) dance.animate(now);
-    const ui = (menu.animating || dance.animating) && due;
+    // Le double avance à la cadence de l'écran (60 Hz), pas plus : au-delà, rien de plus ne
+    // s'affiche et la carte graphique est prise à l'inférence (mesuré : pose 12 → 14,5 ms).
+    const ghostDue = now - lastGhost >= 1000 / GHOST_FPS - 0.5;
+    if (ghostDue && (signs.animating || dance.animating)) {
+      lastGhost = now;
+      if (signs.animating) signs.animate(now);
+      if (dance.animating) dance.animate(now);
+    }
+    const ui = (menu.animating && due) || (dance.animating && ghostDue);
     const userChanged = skeleton && user.version !== drawnVersion;
     if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;

@@ -280,14 +280,15 @@ export class SignLanguageMode {
    * mouvement a vraiment été fait (durée et amplitude, voir didTheMovement).
    */
   private compare(lesson: Lesson, live: Features[]): { distance: number; moved: boolean } {
-    let best = { distance: Infinity, moved: false };
+    let best: { match: ReturnType<typeof matchSign>; template: Features[]; extent: number } | null = null;
     for (const v of lesson.variants) {
       for (const template of [v.features, v.mirror]) {
         const m = matchSign(template, live);
-        if (m.distance < best.distance) best = { distance: m.distance, moved: didTheMovement(template, v.extent, live, m) };
+        if (!best || m.distance < best.match.distance) best = { match: m, template, extent: v.extent };
       }
     }
-    return best;
+    if (!best) return { distance: Infinity, moved: false };
+    return { distance: best.match.distance, moved: didTheMovement(best.template, best.extent, live, best.match) };
   }
 
   // --- Le double doré ---------------------------------------------------------------------------
