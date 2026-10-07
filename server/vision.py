@@ -659,6 +659,13 @@ class Pipeline:
             if 0 < dt < 0.2:
                 speed = np.linalg.norm(pose[:, :2] - self._prev_pose[1][:, :2], axis=1) / dt
         self._prev_pose = (frame.t, pose) if pose is not None else None
+        if self._trace is not None and pose is not None:
+            # Tête en pixels bruts (sans compression) : pour étudier la couleur de la peau.
+            eyes = pose[[2, 5], :2] * [w, h]
+            half = max(16, int(2.0 * np.linalg.norm(eyes[0] - eyes[1])))
+            cx, cy = (pose[0, :2] * [w, h]).astype(int)
+            x0, y0 = max(0, cx - half), max(0, cy - half)
+            self._record({"t": frame.t, "id": frame.id, "kind": "head", "x0": x0, "y0": y0, "crop": frame.rgb[y0 : cy + half, x0 : cx + half].copy(), "pose": pose.copy()})
 
         if self.enabled["hands"]:
             self._run("hands", frame, self._steady(hand_rois(pose, w, h, speed)) if pose is not None else None)
