@@ -208,11 +208,10 @@ class Mirror:
         if depth is not None:
             # Visage : une quarantaine de points suffisent (il en a 478) ; corps et mains : tous.
             step = max(1, len(points) // 40) if kind == "face" else 1
-            radius = self._window(kind, u, v)
-            for i in range(0, len(points), step):
-                if kind == "pose" and points[i, 3] < 0.5:
-                    continue
-                measured[i] = self._surface_depth(depth, u[i], v[i], radius)
+            idx = np.arange(0, len(points), step)
+            if kind == "pose":
+                idx = idx[points[idx, 3] >= 0.5]
+            measured[idx] = self._surface_depths(depth, u[idx], v[idx], self._window(kind, u, v))
             if kind == "pose":
                 # Une articulation ne peut pas être à plus de ~70 cm devant ou derrière le torse :
                 # sinon on a mesuré le fond, le sol ou quelqu'un d'autre.
@@ -259,7 +258,7 @@ class Mirror:
             floor_n = getattr(self.source, "floor_normal", None)
             floor_h = getattr(self.source, "floor_height", None)
             if floor_n is not None and floor_h is not None:
-                undist = cv2.undistortPoints(np.stack([u, v], axis=1).reshape(-1, 1, 2).astype(np.float64), model.K, model.dist).reshape(-1, 2)
+                undist = rays
                 for i, above in self.FEET.items():
                     if not np.isnan(measured[i]) and abs(measured[i] - z[i]) < 0.6:
                         continue  # mesuré par le capteur : on garde
@@ -281,6 +280,35 @@ class Mirror:
         if kind == "hands" and len(u) > 9:
             return int(np.clip(0.2 * math.hypot(u[0] - u[9], v[0] - v[9]), 2, 6))
         return 3
+
+    @staticmethod
+    def _surface_depths(depth: np.ndarray, x: np.ndarray, y: np.ndarray, r: int) -> np.ndarray:
+        """_surface_depth pour tous les points d'un coup (numpy) : même résultat, ~20 fois plus
+        vite qu'une boucle Python (la lecture coûtait ~16 ms par image)."""
+        H, W = depth.shape
+        out = np.full(len(x), np.nan)
+        if not len(x):
+            return out
+        xi, yi = np.round(x).astype(int), np.round(y).astype(int)
+        inside = (xi >= r) & (xi < W - r) & (yi >= r) & (yi < H - r)
+        if not inside.any():
+            return out
+        off = np.arange(-r, r + 1, max(1, r // 4))
+        oy, ox = np.meshgrid(off, off, indexing="ij")
+        vals = depth[yi[inside, None] + oy.ravel()[None], xi[inside, None] + ox.ravel()[None]].astype(np.float64)
+        vals[vals <= 0] = np.inf  # trous : rangés à la fin par le tri
+        vals.sort(axis=1)
+        count = np.sum(np.isfinite(vals), axis=1)
+        rows = np.arange(len(vals))
+        # 20e centile (les mesures valides sont au début de chaque ligne triée)…
+        near = vals[rows, np.clip(((count - 1) * 0.2).astype(int), 0, None)]
+        # … puis le groupe le plus proche est un début de ligne : sa médiane par indexation.
+        front = np.sum(vals <= (near + 0.07)[:, None], axis=1)
+        mid_lo = vals[rows, np.clip((front - 1) // 2, 0, None)]
+        mid_hi = vals[rows, np.clip(front // 2, 0, None)]
+        res = np.where((count >= 6) & (front >= 4), np.where(front % 2 == 1, mid_lo, (mid_lo + mid_hi) / 2), np.nan)
+        out[inside] = res
+        return out
 
     @staticmethod
     def _surface_depth(depth: np.ndarray, x: float, y: float, r: int) -> float:

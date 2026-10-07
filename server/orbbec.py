@@ -123,23 +123,25 @@ class OrbbecCamera(Source):
         cand = pts[pts @ prior < -0.5]
         if len(cand) < 500:
             return
+        # RANSAC vectorisé : 300 plans candidats d'un coup (pas de boucle Python, qui bloquait le
+        # fil d'inférence quelques dizaines de ms toutes les 3 s).
         rng = np.random.default_rng()
+        if len(cand) > 8000:
+            cand = cand[rng.choice(len(cand), 8000, replace=False)]
+        tri = cand[rng.integers(0, len(cand), (300, 3))]
+        normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        norms = np.linalg.norm(normals, axis=1)
+        ok = norms > 1e-6
+        normals, anchors = normals[ok] / norms[ok, None], tri[ok, 0]
+        normals *= np.sign(normals @ prior)[:, None]
+        floor_like = normals @ prior > np.cos(np.radians(20))  # un sol, pas un mur
+        normals, anchors = normals[floor_like], anchors[floor_like]
         best, best_n, best_d = 0, None, 0.0
-        for _ in range(300):
-            a, b, c = cand[rng.choice(len(cand), 3, replace=False)]
-            n = np.cross(b - a, c - a)
-            norm = np.linalg.norm(n)
-            if norm < 1e-6:
-                continue
-            n /= norm
-            if n @ prior < 0:
-                n = -n
-            if n @ prior < np.cos(np.radians(20)):  # un sol, pas un mur
-                continue
-            dist = n @ a
-            count = int(np.sum(np.abs(cand @ n - dist) < 0.025))
-            if count > best:
-                best, best_n, best_d = count, n, dist
+        if len(normals):
+            offsets = np.einsum("ij,ij->i", normals, anchors)
+            counts = np.sum(np.abs(cand @ normals.T - offsets) < 0.025, axis=0)
+            j = int(np.argmax(counts))
+            best, best_n, best_d = int(counts[j]), normals[j], float(offsets[j])
         if best_n is None or best < 1500 or best < 0.15 * len(cand):
             return
         # Affinage sur tous les points du plan.
