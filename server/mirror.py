@@ -243,14 +243,22 @@ class Mirror:
             self.state.body_z = zref
 
         rays = cv2.undistortPoints(np.stack([u, v], axis=1).reshape(-1, 1, 2).astype(np.float64), model.K, model.dist).reshape(-1, 2)
-        z = zref * (1 + rel)
+        # Relief deviné par MediaPipe, seulement pour les points sans mesure : borné (il peut être
+        # très faux), ±25 % autour de la distance du corps (~45 cm à 1,8 m).
+        z = zref * (1 + np.clip(rel, -0.25, 0.25))
         # Corps et mains : là où le capteur voit le point, on prend sa profondeur à lui (bras
         # tendu vers le miroir, main devant le corps) plutôt que le relief estimé par MediaPipe,
         # peu fiable. Un écart trop grand veut dire qu'on a mesuré le fond ou un autre objet.
         share = 0.0
         if kind in ("pose", "hands") and source == "profondeur":
-            tolerance = 0.6 if kind == "pose" else 0.15
-            use = ~np.isnan(measured) & (np.abs(measured - z) < tolerance)
+            # La mesure du capteur fait foi. On ne la compare surtout pas au relief deviné par
+            # MediaPipe : faux et instable (bras levés notamment), il faisait rejeter de bonnes
+            # mesures une image sur deux (enregistré : hanche mesurée 1,75 m stable, utilisée 2,58
+            # m). Corps : déjà filtré par rapport au torse mesuré. Main : par rapport à la médiane
+            # de ses propres mesures (un doigt sur le fond est écarté).
+            use = ~np.isnan(measured)
+            if kind == "hands" and use.any():
+                use &= np.abs(measured - np.nanmedian(measured)) < 0.15
             z = np.where(use, measured, z)
             share = float(use.mean())
         # Pieds sans profondeur (hors champ, ou trop près du sol) : on les pose sur le sol. Le
