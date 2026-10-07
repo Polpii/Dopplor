@@ -119,6 +119,9 @@ class MirrorState:
     #: Largeur d'épaules (m) de la personne, apprise quand on voit son visage (écart entre les
     #: yeux) : bien plus juste que la moyenne pour estimer sa distance quand le visage est perdu.
     shoulder_m: float | None = None
+    #: Profondeur lissée de chaque point, par détection : le bruit du capteur (1 à 2 cm, plus
+    #: sur les bords) faisait trembler le reflet calculé.
+    z_smooth: dict = field(default_factory=dict)
 
 
 class Mirror:
@@ -240,6 +243,12 @@ class Mirror:
             use = ~np.isnan(measured) & (np.abs(measured - z) < tolerance)
             z = np.where(use, measured, z)
             share = float(use.mean())
+        # Lissage dans le temps : doux quand le point bouge peu, rapide quand il bouge vraiment.
+        prev = self.state.z_smooth.get(key)
+        if prev is not None and len(prev) == len(z):
+            k = np.where(np.abs(z - prev) > 0.12, 0.8, 0.3)
+            z = prev + (z - prev) * k
+        self.state.z_smooth[key] = z.copy()
         return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share)
 
     #: En dessous (px), la taille d'une main ou d'un visage à l'image est trop imprécise.
@@ -306,7 +315,8 @@ class Mirror:
     def update_eye(self, eye_cam: np.ndarray) -> None:
         eye = self.to_mirror(eye_cam.reshape(1, 3))
         if eye is not None and eye[0, 2] < -0.1:
-            self.state.eye = eye[0] if self.state.eye is None else self.state.eye * 0.5 + eye[0] * 0.5
+            # Les yeux bougent peu et lentement : lissage plus fort (moins de tremblement).
+            self.state.eye = eye[0] if self.state.eye is None else self.state.eye * 0.75 + eye[0] * 0.25
 
     # --- Reflet ------------------------------------------------------------------------
 

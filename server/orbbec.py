@@ -10,6 +10,11 @@
   les images, ses centaines de mesures par seconde remplissaient la file d'attente du SDK et
   retardaient les images d'environ 490 ms (mesuré). Sans lui : 0,2 ms.
 - On ne garde que l'image la plus récente : jamais de retard qui s'accumule.
+- La verticale vient du sol : toutes les quelques secondes, on cherche dans la profondeur le
+  grand plan horizontal sous la caméra. C'est une mesure géométrique directe ; l'accéléromètre
+  (dont la correspondance d'axes n'est connue qu'à quelques degrés près) ne sert qu'à le
+  reconnaître, et de secours quand le sol n'est pas visible. Un degré d'erreur sur la verticale
+  décale le reflet calculé d'environ 3 cm à 1,5 m.
 """
 from __future__ import annotations
 
@@ -75,10 +80,77 @@ class OrbbecCamera(Source):
         self.width, self.height = (ci.height, ci.width) if self.rotate in (90, 270) else (ci.width, ci.height)
         self._align = ob.AlignFilter(align_to_stream=ob.OBStreamType.COLOR_STREAM)
         self._aligner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
+        self._floor_job = ThreadPoolExecutor(max_workers=1, thread_name_prefix="floor")
+        self._floor_up: np.ndarray | None = None
+        self._floor_at = 0.0
+        #: Hauteur de l'objectif au-dessus du sol (m), si le sol est vu.
+        self.floor_height: float | None = None
         log.info("%s : couleur %dx%d YUYV + profondeur 640x576 à %d fps (fx=%.1f)", self.name, ci.width, ci.height, fps, ci.fx)
 
     def up(self) -> np.ndarray | None:
-        return self._up
+        return self._floor_up if self._floor_up is not None else self._up
+
+    def _estimate_floor(self, depth_future: Future) -> None:
+        """Plan du sol dans la profondeur (RANSAC) → verticale de la caméra."""
+        try:
+            depth = depth_future.result(timeout=1)
+        except Exception:  # noqa: BLE001
+            return
+        if depth is None:
+            return
+        K = self.model.K
+        step = 6
+        d = depth[::step, ::step]
+        vs, us = np.nonzero((d > 0.4) & (d < 6.0))
+        z = d[vs, us].astype(np.float64)
+        x = (us * step - K[0, 2]) / K[0, 0] * z
+        y = (vs * step - K[1, 2]) / K[1, 1] * z
+        pts = np.stack([x, y, z], axis=1)
+        prior = self._up if self._up is not None else super().up()
+        if prior is None or len(pts) < 500:
+            return
+        # Candidats : au moins 50 cm sous l'objectif (le sol, pas un mur ni une personne).
+        cand = pts[pts @ prior < -0.5]
+        if len(cand) < 500:
+            return
+        rng = np.random.default_rng()
+        best, best_n, best_d = 0, None, 0.0
+        for _ in range(300):
+            a, b, c = cand[rng.choice(len(cand), 3, replace=False)]
+            n = np.cross(b - a, c - a)
+            norm = np.linalg.norm(n)
+            if norm < 1e-6:
+                continue
+            n /= norm
+            if n @ prior < 0:
+                n = -n
+            if n @ prior < np.cos(np.radians(20)):  # un sol, pas un mur
+                continue
+            dist = n @ a
+            count = int(np.sum(np.abs(cand @ n - dist) < 0.025))
+            if count > best:
+                best, best_n, best_d = count, n, dist
+        if best_n is None or best < 1500 or best < 0.15 * len(cand):
+            return
+        # Affinage sur tous les points du plan.
+        inl = cand[np.abs(cand @ best_n - best_d) < 0.025]
+        centered = inl - inl.mean(axis=0)
+        n = np.linalg.svd(centered, full_matrices=False)[2][-1]
+        if n @ prior < 0:
+            n = -n
+        height = float(-(inl.mean(axis=0) @ n))
+        first = self._floor_up is None
+        self._floor_up = n if first else (self._floor_up * 0.7 + n * 0.3)
+        self._floor_up /= np.linalg.norm(self._floor_up)
+        self.floor_height = height
+        if first:
+            gap = None
+            if self._up is not None:
+                gap = float(np.degrees(np.arccos(np.clip(self._up @ n, -1, 1))))
+            log.info(
+                "sol vu (%d points) : objectif à %.2f m du sol ; écart avec l'accéléromètre : %s",
+                len(inl), height, f"{gap:.1f}°" if gap is not None else "?",
+            )
 
     def _power_line_50hz(self) -> None:
         """Anti-scintillement 50 Hz (secteur européen) : sinon des bandes sous les éclairages."""
@@ -154,6 +226,10 @@ class OrbbecCamera(Source):
             rgb = cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUY2)
             future: Future = self._aligner.submit(self._depth_of, frames)
             self._publish(rgb, t, wall, lambda f=future: f.result(timeout=0.2))
+            # Verticale par le sol, toutes les 3 s (en parallèle, sans retarder les images).
+            if t - self._floor_at > 3:
+                self._floor_at = t
+                self._floor_job.submit(self._estimate_floor, future)
         self.pipe.stop()
         if self._accel is not None:
             self._accel.stop()
