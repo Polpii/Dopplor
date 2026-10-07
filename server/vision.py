@@ -333,6 +333,9 @@ class Pipeline:
         self._band: tuple[int, int] | None = None
         self._band_lost = 0
         self._probe_at = 0.0
+        #: Dernière personne acceptée (centre du torse, instant, détection) et sauts en attente.
+        self._accepted: tuple[np.ndarray, float, Detection] | None = None
+        self._switch = 0
         #: Enregistrement de diagnostic (commande « trace ») : tout ce qui est calculé, image par image.
         self._trace: dict | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
@@ -388,7 +391,7 @@ class Pipeline:
         t0 = time.perf_counter()
         dets = self.tasks[kind].detect(frame, rois, band)
         if kind == "pose":
-            dets = self._pick_person(dets)
+            dets = self._same_person(frame, self._pick_person(dets))
         infer = (time.perf_counter() - t0) * 1000
         self.stats[kind].add(infer)
         self.zoomed[kind] = rois is not None
@@ -437,6 +440,31 @@ class Pipeline:
         best = max(dets, key=score)
         self._focus = self._torso_center(best.points)
         return [best]
+
+    # --- Ne pas sauter d'une personne à l'autre ----------------------------------------------------
+
+    #: Un torse qui se déplace de plus que ça (fraction de l'image) en une image, c'est une autre
+    #: personne : ~30 cm en 1/30 s à 2 m, soit 8 m/s, impossible pour un corps.
+    SWITCH_JUMP = 0.15
+    #: Images consécutives avant d'accepter la nouvelle personne (~0,25 s).
+    SWITCH_FRAMES = 8
+
+    def _same_person(self, frame: Frame, dets: list[Detection]) -> list[Detection]:
+        """Le modèle suit une personne, mais peut passer d'un coup sur une autre (quelqu'un passe,
+        la personne suivie sort du champ…). Un tel saut est gardé en attente : on continue de
+        montrer la personne d'avant, et on n'accepte la nouvelle que si elle persiste."""
+        if not dets:
+            self._switch = 0
+            return dets
+        center = self._torso_center(dets[0].points)
+        last = self._accepted
+        if last is not None and frame.t - last[1] < 0.5 and float(np.hypot(*(center - last[0]))) > self.SWITCH_JUMP:
+            self._switch += 1
+            if self._switch < self.SWITCH_FRAMES:
+                return [last[2]]  # la personne d'avant, telle qu'elle était
+        self._switch = 0
+        self._accepted = (center, frame.t, dets[0])
+        return dets
 
     # --- Rester sur la personne du centre ------------------------------------------------------
 
