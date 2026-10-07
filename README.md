@@ -36,7 +36,7 @@ A few things that took some trial and error:
 
 ## Modes
 
-At startup the mirror shows nothing: it's just a mirror. Each mode is switched on and off from the menu: pick it to turn it on, pick it again to turn it off, and the bubbles of the modes that are on glow brighter. The skeleton can be added on top of the other modes; sign language and dance are activities, one at a time. In sign language and dance, your own skeleton is only drawn if the skeleton mode is on. `Escape` closes the menu, then stops the activity, then turns the skeleton off. The debug panel is hidden by default (`H`).
+At startup only the skeleton is on. Each mode is switched on and off from the menu: pick it to turn it on, pick it again to turn it off, and the bubbles of the modes that are on glow brighter. The skeleton can be added on top of the other modes; sign language and dance are activities, one at a time. In sign language and dance, your own skeleton is only drawn if the skeleton mode is on. `Escape` closes the menu, then stops the activity, then turns the skeleton off. The debug panel is hidden by default (`H`).
 
 To open the mode menu, make a fist with the palm facing the sky (it lights up), then open it in one go, as if throwing the menu up. The menu shoots out of your fingers. No waiting: the fist only needs to be there before the hand opens.
 

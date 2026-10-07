@@ -102,8 +102,8 @@ async function main(): Promise<void> {
 
   // Modes, choisis dans le menu (geste ou touche M) : chacun s'allume ou s'éteint quand on le
   // choisit. Le squelette s'ajoute à ce qu'on fait (on peut danser en le voyant ou non) ; la
-  // langue des signes et la danse sont des activités, une seule à la fois. Au démarrage, rien
-  // n'est affiché : le miroir est un simple miroir.
+  // langue des signes et la danse sont des activités, une seule à la fois. Au démarrage, seul le
+  // squelette est allumé (on peut l'éteindre dans le menu).
   const ghost = new Scene(); // double doré (langue des signes, danse)
   const signs = new SignLanguageMode(scene, ghost, () => source.frameSize(), source.apiBase?.() ?? null, () => renderer.visibleArea());
   const dance = new DanceMode(
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
   );
-  let skeleton = false;
+  let skeleton = true;
   let activity: "signs" | "dance" | null = null;
   const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
   const activeModes = () => [...(skeleton ? ["skeleton"] : []), ...(activity ? [activity] : [])];
