@@ -63,7 +63,9 @@ class OrbbecCamera(Source):
             dist=np.array([cd.k1, cd.k2, cd.p1, cd.p2, cd.k3, cd.k4, cd.k5, cd.k6], dtype=np.float64),
         )
         self.depth_to_color = np.array(param.transform.rot, dtype=np.float64).reshape(3, 3)
-        trans = getattr(param.transform, "transform", None) or getattr(param.transform, "trans", None)
+        trans = getattr(param.transform, "transform", None)
+        if trans is None:
+            trans = getattr(param.transform, "trans", None)
         if trans is not None:
             log.info("profondeur → couleur : décalage %s mm (géré par le recalage du SDK)", np.round(np.array(trans, dtype=float), 1).tolist())
         self._power_line_50hz()
