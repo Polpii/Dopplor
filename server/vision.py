@@ -638,7 +638,9 @@ class Pipeline:
 
         if self.enabled["hands"]:
             self._run("hands", frame, self._steady(hand_rois(pose, w, h, speed)) if pose is not None else None)
-        if self.enabled["face"]:
+        # Visage une image sur deux : il bouge lentement (le lissage comble), et le cycle plus
+        # court fait attendre moins longtemps l'image suivante avant le corps (latence).
+        if self.enabled["face"] and frame.id % 2 == 0:
             self._run("face", frame, self._steady(face_rois(pose, w, h, speed)) if pose is not None else None)
 
 
