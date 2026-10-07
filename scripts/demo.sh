@@ -70,6 +70,7 @@ setsid nohup chromium \
   --user-data-dir="$PROFILE" \
   --no-first-run --noerrdialogs --disable-infobars --disable-session-crashed-bubble \
   --disable-features=Translate --ignore-gpu-blocklist --enable-gpu-rasterization \
+  --remote-debugging-port=9222 \
   "${LATENCY_FLAGS[@]}" \
   >"$LOGS/chromium.log" 2>&1 &
 

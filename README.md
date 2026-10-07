@@ -36,18 +36,16 @@ A few things that took some trial and error:
 
 ## Modes
 
-To open the mode menu, close your fist with the hand raised and hold it a moment: a ring charges up around it and turns gold when it's ready. Then open the hand in one go, fingers up, as if throwing the menu to the sky. The menu shoots out of your fingers.
+To open the mode menu, make a fist with the palm facing the sky (it lights up), then open it in one go, as if throwing the menu up. The menu shoots out of your fingers. No waiting: the fist only needs to be there before the hand opens.
 
-Holding the fist matters. A fist opening upwards is everywhere in sign language: on about 100 LSF videos (4.5 minutes of signing), a plain fist-then-open fired about 60 times. Fists in signs never stay still, though, so asking for a fist held still for 0.4 s brings that down to 5, and 95% of simulated real gestures still go through. Opening the hand slowly, downwards, at hip level, or after waving the fist around does nothing. After you close the menu with your fist, opening the hand again won't relaunch it until you charge a new fist.
-
-An earlier version looked at which way the palm faces, using the depth MediaPipe estimates for each point. From where people stand at the mirror, a hand is only a few dozen pixels wide and that depth is too noisy: the palm direction flipped from frame to frame.
+A fist opening quickly is everywhere in sign language: on about 100 LSF videos (4.5 minutes of signing), a plain fist-then-open fired 36 times. Requiring the palm to face up, on the fist and on the open hand, brings that down to 6. The palm direction comes from the depth MediaPipe estimates for each hand point, which gets noisy when the hand is small in the image, so it's taken as the best of the last three frames. An earlier version made you hold the fist still for 0.4 s instead; it filtered as well but didn't feel smooth. Opening the hand facing the mirror, slowly, while lowering it, or at hip level does nothing. After you close the menu with your fist, opening the hand again won't relaunch it.
 
 Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. The menu doesn't go away on its own when you lower your hand: close your fist and keep it closed, and the menu folds back into your hand (open the fist early to cancel). It's also put away if nobody is in front of the mirror anymore. `M` opens it from the keyboard.
 
 The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same bloom); the first version used CSS glows, which got very slow on a 4K screen.
 
 - **Skeleton**: the default, body + hands + face in neon.
-- **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
+- **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. The double plays the sign smoothly at the screen's frame rate: the recordings are 15 frames a second with a few gaps, so frames are interpolated, missing hands are filled in, and at the end it holds the pose and glides back to the start instead of jumping. It keeps its side next to you and follows you gently. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
 
 There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). Lingua Libre also has a lot of library vocabulary (conseiller, réservation…), so only about 30 simple everyday words are kept (`WORDS` in the script): greetings, please and thank you, questions, a few verbs and some animals. They're in `data/lsf/`. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
 
@@ -110,7 +108,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
 | `↑` `↓` | more / less prediction (latency compensation) |
-| `M` | mode menu (or hold a fist, then throw it open) |
+| `M` | mode menu (or open a palm-up fist in one go) |
 | `R` `←` `→` `Suppr` | sign language mode: record a sign, previous / next, delete |
 | `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
@@ -134,9 +132,10 @@ src/
   calibration.ts     calibration panel
   modes/
     menu.ts          mode menu driven by the hand
-    gestures.ts      hand shape (fist, pinch, fingers up), the charge-and-throw gesture
+    gestures.ts      hand shape (fist, pinch, palm up), the menu gesture
     sign-language.ts sign language mode (learning, golden double, recording)
     signs.ts         sign recording, comparison (DTW) and storage
+    ghost.ts         smooth playback of a sign by the golden double
   scene.ts           tracking, smoothing, expressions
   vision/
     remote.ts        landmarks from the Python server

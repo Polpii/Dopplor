@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     (id) => void setMode(id),
   );
   menu.setCurrent(mode);
-  if (import.meta.env.DEV) Object.assign(window, { __menu: menu });
+  if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -139,6 +139,8 @@ async function main(): Promise<void> {
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
+    // Le double du mode langue des signes avance à chaque image affichée (mouvement fluide).
+    if (signs.animating && due) signs.animate(now);
     const ui = menu.animating && due;
     if ((predicting && due) || ui || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
       lastDraw = now;

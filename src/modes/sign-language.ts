@@ -12,6 +12,7 @@
 import { GHOST_COLOR } from "../render/figures";
 import { Scene, type Side } from "../scene";
 import type { Detection } from "../vision/protocol";
+import { GhostClip } from "./ghost";
 import {
   SIGN_FPS,
   SignStore,
@@ -36,7 +37,6 @@ const LIVE_SECONDS = 4;
 const RECORD_MAX_MS = 4000;
 const COUNTDOWN_MS = 3000;
 const SUCCESS_MS = 2200;
-const GHOST_PAUSE_MS = 1200;
 /** Temps minimum avant de pouvoir réussir un signe (le temps de regarder le double). */
 const MIN_LEARN_MS = 1500;
 /** On passe au mot suivant si personne n'y arrive (le miroir ne doit pas rester bloqué). */
@@ -62,6 +62,8 @@ type State = "learn" | "countdown" | "recording" | "naming" | "success";
 
 interface LoadedSign {
   sign: Sign;
+  /** Lecture fluide du signe par le double. */
+  clip: GhostClip;
   features: Features[];
   mirror: Features[];
   /** Amplitude du geste du modèle. */
@@ -99,6 +101,10 @@ export class SignLanguageMode {
   private lastMatch = 0;
   private recorded: SignFrame[] = [];
   private ghostStart = 0;
+  /** Où se tient le double (px de l'image caméra) : suit la personne en douceur, garde son côté. */
+  private anchor: { x: number; y: number; size: number; side: number; vignette: boolean; at: number } | null = null;
+  /** Jauge affichée : monte vite, redescend doucement (pas de chiffres qui sautent). */
+  private shownScore = 0;
   private active = false;
 
   constructor(
@@ -192,7 +198,6 @@ export class SignLanguageMode {
     this.capture(now);
     switch (this.state) {
       case "learn":
-        this.playGhost(now);
         if (now - this.lastMatch > 150) this.match(now);
         if (this.state === "learn" && now - this.stateSince > SKIP_MS && this.lessons.length > 1) {
           this.index = (this.index + 1) % this.lessons.length;
@@ -201,7 +206,6 @@ export class SignLanguageMode {
         }
         break;
       case "success":
-        this.playGhost(now);
         if (now - this.stateSince > SUCCESS_MS) {
           if (this.lessons.length) this.index = (this.index + 1) % this.lessons.length;
           this.setState("learn", now);
@@ -248,13 +252,13 @@ export class SignLanguageMode {
     if (!target) return;
     const live = this.live.map((l) => l.features).filter(hasHands);
     if (live.length < 4) {
-      this.setScore(0);
+      this.setScore(0); // la jauge redescend doucement pendant une pause
       return;
     }
     const { distance, moved } = this.compare(target, live);
     // Bonne pose mais sans le mouvement : la jauge s'arrête avant la fin.
     this.setScore(moved ? progress(distance) : Math.min(progress(distance), 0.75));
-    this.hint.textContent = !moved && progress(distance) > 0.75 ? "Bonne position… maintenant fais le mouvement" : "Imite ton double doré";
+    this.setHint(!moved && progress(distance) > 0.75 ? "Bonne position… maintenant fais le mouvement" : "Imite ton double doré");
     if (distance <= MATCH_DISTANCE && moved && now - this.stateSince > MIN_LEARN_MS) {
       this.learned.add(target);
       this.setState("success", now);
@@ -288,77 +292,113 @@ export class SignLanguageMode {
 
   // --- Le double doré ---------------------------------------------------------------------------
 
-  /** Rejoue le signe en boucle à côté de la personne, à sa taille. */
-  private playGhost(now: number): void {
-    const target = this.lessons[this.index]?.variants[0]?.sign;
-    if (!target || !target.frames.length) return;
-    const duration = target.frames.at(-1)!.t - target.frames[0].t;
-    const t = (now - this.ghostStart) % (duration + GHOST_PAUSE_MS);
-    const frame = target.frames.find((f) => f.t - target.frames[0].t >= t) ?? target.frames.at(-1)!;
-    const [w, h] = this.frameSize();
-    const toPx = (arr: number[], i: number): [number, number] => [arr[i * 2] * target.width, arr[i * 2 + 1] * target.height];
+  /** Le double est en train de signer : il faut redessiner à la cadence de l'écran. */
+  get animating(): boolean {
+    return this.active && (this.state === "learn" || this.state === "success") && this.lessons.length > 0;
+  }
 
-    // Repère du signe enregistré → repère de la personne (ou centre de l'image si personne).
-    const ls = toPx(frame.pose, 11);
-    const rs = toPx(frame.pose, 12);
-    const srcCenter = [(ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2];
-    const srcScale = Math.max(Math.hypot(ls[0] - rs[0], ls[1] - rs[1]), 1);
-    let dstCenter = [w / 2, h * 0.4];
-    let dstScale = srcScale * (w / target.width);
-    let body = null;
-    for (const b of this.scene.bodies) if (b.lostAt === null) body = b;
-    if (body) {
-      const v = body.smoother.value;
-      const bl = [v[44] * w, v[45] * h];
-      const br = [v[48] * w, v[49] * h];
-      dstScale = Math.max(Math.hypot(bl[0] - br[0], bl[1] - br[1]), 1);
-      dstCenter = [(bl[0] + br[0]) / 2, (bl[1] + br[1]) / 2];
-    }
-    // À côté de la personne, du côté où il reste le plus de place à l'écran. Sur un écran en
-    // portrait, on ne voit qu'une bande de l'image caméra : si le double n'y tient pas, on le
-    // réduit (jusqu'à 60 %) puis on le ramène dans la partie visible.
-    const area = this.visible();
-    const left = area.x0 * w;
-    const right = area.x1 * w;
-    const side = dstCenter[0] - left > right - dstCenter[0] ? -1 : 1;
-    let size = dstScale;
-    const halfWidth = (s: number) => s * 1.6; // bras écartés : ~1,6 largeur d'épaules de chaque côté
-    let x = dstCenter[0] + side * dstScale * 2.2;
-    let y = dstCenter[1];
-    while (size > dstScale * 0.85 && (x - halfWidth(size) < left || x + halfWidth(size) > right)) {
-      size *= 0.95;
-      x = dstCenter[0] + side * (dstScale + size) * 1.15;
-    }
-    if (x - halfWidth(size) < left || x + halfWidth(size) > right) {
-      // Pas la place à côté (on remplit le cadre) : vignette en haut, à côté de la tête.
-      size = ((right - left) * 0.46) / 3.2;
-      x = side > 0 ? right - halfWidth(size) - (right - left) * 0.03 : left + halfWidth(size) + (right - left) * 0.03;
-      y = area.y0 * h + (area.y1 - area.y0) * h * 0.3;
-    }
-    const k = size / srcScale;
-    const map = (p: [number, number]): [number, number] => [(x + (p[0] - srcCenter[0]) * k) / w, (y + (p[1] - srcCenter[1]) * k) / h];
+  /**
+   * Fait avancer le double ; appelé à chaque image affichée (pas seulement 30 fois par seconde),
+   * pour un mouvement fluide.
+   */
+  animate(now: number): void {
+    if (!this.animating) return;
+    const clip = this.lessons[this.index]?.variants[0]?.clip;
+    if (!clip || !clip.duration) return;
+    const frame = clip.sample(now - this.ghostStart);
+    const [w, h] = this.frameSize();
+    const a = this.placeGhost(now, w, h);
+    const k = a.size / clip.scale;
+    const map = (x: number, y: number): [number, number] => [(a.x + (x - clip.center[0]) * k) / w, (a.y + (y - clip.center[1]) * k) / h];
 
     const pose = new Float32Array(33 * 4);
     for (let i = 0; i < 25; i++) {
-      const [x, y] = map(toPx(frame.pose, i));
+      const [x, y] = map(frame.pose[i * 2], frame.pose[i * 2 + 1]);
       // Hanches masquées : les vidéos sont cadrées en buste, elles sont souvent hors champ.
       pose.set([x, y, 0, i === 23 || i === 24 ? 0 : 1], i * 4);
     }
-    const dets: Detection[] = [{ points: pose, key: "g0" }];
     const hands: Detection[] = [];
     for (const side of ["left", "right"] as Side[]) {
       const pts = frame.hands[side];
       if (!pts) continue;
       const out = new Float32Array(21 * 4);
       for (let i = 0; i < 21; i++) {
-        const [x, y] = map(toPx(pts, i));
+        const [x, y] = map(pts[i * 2], pts[i * 2 + 1]);
         out.set([x, y, 0, 1], i * 4);
       }
       hands.push({ points: out, key: `g0/${side}` });
     }
-    this.ghost.update("pose", dets, now);
+    this.ghost.update("pose", [{ points: pose, key: "g0" }], now);
     this.ghost.update("hands", hands, now);
     for (const map of Object.values(this.ghost.tracks)) for (const t of map.values()) t.color = GHOST_COLOR;
+  }
+
+  /**
+   * Où mettre le double (centre des épaules et largeur d'épaules, px de l'image caméra) : à côté
+   * de la personne, à sa taille. Il garde son côté tant qu'il y tient (pas d'aller-retour quand on
+   * est au milieu), et suit la personne en douceur. Sur un écran en portrait, si la personne
+   * remplit le cadre, il se met en vignette en haut, à côté de la tête.
+   */
+  private placeGhost(now: number, w: number, h: number): { x: number; y: number; size: number } {
+    let center: [number, number] = [w / 2, h * 0.4];
+    let scale = w * 0.18;
+    let body = null;
+    for (const b of this.scene.bodies) if (b.lostAt === null) body = b;
+    if (body) {
+      const v = body.smoother.value;
+      const l = [v[44] * w, v[45] * h];
+      const r = [v[48] * w, v[49] * h];
+      scale = Math.max(Math.hypot(l[0] - r[0], l[1] - r[1]), 1);
+      center = [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2];
+    }
+    const area = this.visible();
+    const left = area.x0 * w;
+    const right = area.x1 * w;
+    const half = (s: number) => s * 1.6; // bras écartés : ~1,6 largeur d'épaules de chaque côté
+    const beside = (side: number) => {
+      let size = scale;
+      let x = center[0] + side * scale * 2.2;
+      while (size > scale * 0.85 && (x - half(size) < left || x + half(size) > right)) {
+        size *= 0.95;
+        x = center[0] + side * (scale + size) * 1.15;
+      }
+      return { x, y: center[1], size, fits: x - half(size) >= left && x + half(size) <= right };
+    };
+    // Côté : celui d'avant tant qu'il convient ; sinon celui où il y a le plus de place.
+    const prev = this.anchor;
+    let side = prev?.side ?? (center[0] - left > right - center[0] ? -1 : 1);
+    let spot = beside(side);
+    if (!spot.fits) {
+      const other = beside(-side);
+      if (other.fits) {
+        side = -side;
+        spot = other;
+      }
+    }
+    let target = { x: spot.x, y: spot.y, size: spot.size };
+    const vignette = !spot.fits;
+    if (vignette) {
+      const size = ((right - left) * 0.46) / 3.2;
+      target = {
+        x: side > 0 ? right - half(size) - (right - left) * 0.03 : left + half(size) + (right - left) * 0.03,
+        y: area.y0 * h + (area.y1 - area.y0) * h * 0.3,
+        size,
+      };
+    }
+    // Suivi en douceur (~0,3 s), sauf la première fois.
+    if (!prev) this.anchor = { ...target, side, vignette, at: now };
+    else {
+      const k = 1 - Math.exp(-Math.max(0, now - prev.at) / 300);
+      this.anchor = {
+        x: prev.x + (target.x - prev.x) * k,
+        y: prev.y + (target.y - prev.y) * k,
+        size: prev.size + (target.size - prev.size) * k,
+        side,
+        vignette,
+        at: now,
+      };
+    }
+    return this.anchor;
   }
 
   // --- Enregistrement ----------------------------------------------------------------------------
@@ -414,7 +454,7 @@ export class SignLanguageMode {
     const signs = await this.store.list().catch(() => [] as Sign[]);
     const byLabel = new Map<string, Lesson>();
     for (const sign of signs) {
-      const loaded: LoadedSign = { sign, features: signFeatures(sign), mirror: [], extent: 0 };
+      const loaded: LoadedSign = { sign, clip: new GhostClip(sign), features: signFeatures(sign), mirror: [], extent: 0 };
       if (loaded.features.length < 3) continue;
       loaded.mirror = loaded.features.map(mirrored);
       loaded.extent = extent(loaded.features);
@@ -457,7 +497,7 @@ export class SignLanguageMode {
       // On repart de zéro : sinon les mouvements d'avant (dont l'enregistrement lui-même)
       // valideraient le signe aussitôt.
       this.live = [];
-      this.setScore(0);
+      this.setScore(0, true);
     }
     if (state === "success") this.showToast("Bravo !");
     if (state === "countdown" || state === "recording") {
@@ -502,10 +542,20 @@ export class SignLanguageMode {
     this.gauge.classList.toggle("hidden", !current || this.state !== "learn");
   }
 
-  private setScore(score: number): void {
-    this.gauge.style.setProperty("--p", score.toFixed(3));
-    this.gauge.classList.toggle("close", score >= 0.8);
-    this.score.textContent = String(Math.round(score * 100));
+  /** Jauge : monte vite, redescend doucement ; `immediate` pour la remettre à zéro d'un coup. */
+  private setScore(score: number, immediate = false): void {
+    const s = this.shownScore;
+    this.shownScore = immediate ? score : s + (score - s) * (score > s ? 0.6 : 0.15);
+    // On n'écrit dans la page que si l'affichage change (chaque écriture redessine).
+    const p = this.shownScore.toFixed(2);
+    if (this.gauge.style.getPropertyValue("--p") !== p) this.gauge.style.setProperty("--p", p);
+    this.gauge.classList.toggle("close", this.shownScore >= 0.8);
+    const text = String(Math.round(this.shownScore * 100));
+    if (this.score.textContent !== text) this.score.textContent = text;
+  }
+
+  private setHint(text: string): void {
+    if (this.hint.textContent !== text) this.hint.textContent = text;
   }
 
   private setCount(text: string): void {
