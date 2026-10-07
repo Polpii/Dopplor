@@ -6,6 +6,10 @@
 - L'accéléromètre donne la direction du haut, donc l'inclinaison de la caméra, même quand on
   la déplace. Ses axes ne sont pas ceux de la caméra : la correspondance a été mesurée en
   comparant sa gravité au plan du sol vu par la profondeur (accord à 0,998).
+- L'accéléromètre est lu à part, à sa fréquence la plus basse : branché dans le même flux que
+  les images, ses centaines de mesures par seconde remplissaient la file d'attente du SDK et
+  retardaient les images d'environ 490 ms (mesuré). Sans lui : 0,2 ms.
+- On ne garde que l'image la plus récente : jamais de retard qui s'accumule.
 """
 from __future__ import annotations
 
@@ -45,12 +49,10 @@ class OrbbecCamera(Source):
         # YUYV : pas de décodage JPEG. Profondeur NFOV non binnée : 0,5–3,9 m, 30 fps.
         config.enable_stream(color_list.get_video_stream_profile(width, height, ob.OBFormat.YUYV, fps))
         config.enable_stream(depth_list.get_video_stream_profile(640, 576, ob.OBFormat.Y16, fps))
-        try:
-            config.enable_stream(self.pipe.get_stream_profile_list(ob.OBSensorType.ACCEL_SENSOR).get_stream_profile_by_index(0))
-        except Exception as e:  # noqa: BLE001
-            log.warning("accéléromètre indisponible : %s", e)
-        config.set_frame_aggregate_output_mode(ob.OBFrameAggregateOutputMode.ANY_SITUATION)
+        config.set_frame_aggregate_output_mode(ob.OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
         self.pipe.enable_frame_sync()
+        self._up: np.ndarray | None = None
+        self._accel = self._start_accel()
         self.pipe.start(config)
 
         param = self.pipe.get_camera_param()
@@ -65,7 +67,6 @@ class OrbbecCamera(Source):
         self.width, self.height = (ci.height, ci.width) if self.rotate in (90, 270) else (ci.width, ci.height)
         self._align = ob.AlignFilter(align_to_stream=ob.OBStreamType.COLOR_STREAM)
         self._aligner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
-        self._up: np.ndarray | None = None
         log.info("%s : couleur %dx%d YUYV + profondeur 640x576 à %d fps (fx=%.1f)", self.name, ci.width, ci.height, fps, ci.fx)
 
     def up(self) -> np.ndarray | None:
@@ -82,11 +83,29 @@ class OrbbecCamera(Source):
         d = np.frombuffer(depth.get_data(), np.uint16).reshape(depth.get_height(), depth.get_width())
         return d.astype(np.float32) * (depth.get_depth_scale() / 1000.0)
 
-    def _update_up(self, frames) -> None:
-        accel = frames.get_frame(ob.OBFrameType.ACCEL_FRAME)
-        if accel is None:
+    def _start_accel(self):
+        """Accéléromètre à part, à sa fréquence la plus basse (le haut ne change pas vite)."""
+        try:
+            sensor = self.pipe.get_device().get_sensor(ob.OBSensorType.ACCEL_SENSOR)
+            plist = sensor.get_stream_profile_list()
+            profiles = [plist.get_stream_profile_by_index(i) for i in range(plist.get_count())]
+            rated = []
+            for p in profiles:
+                try:
+                    rated.append((int(p.as_accel_stream_profile().get_sample_rate()), p))
+                except Exception:  # noqa: BLE001
+                    pass
+            profile = min(rated, key=lambda r: r[0])[1] if rated else profiles[0]
+            sensor.start(profile, self._update_up)
+            return sensor
+        except Exception as e:  # noqa: BLE001
+            log.warning("accéléromètre indisponible : %s", e)
+            return None
+
+    def _update_up(self, frame) -> None:
+        if frame is None:
             return
-        a = accel.as_accel_frame()
+        a = frame.as_accel_frame()
         g = np.array([a.get_x(), a.get_y(), a.get_z()], dtype=np.float64)
         n = np.linalg.norm(g)
         if n < 1e-3:
@@ -100,7 +119,9 @@ class OrbbecCamera(Source):
             frames = self.pipe.wait_for_frames(100)
             if frames is None:
                 continue
-            self._update_up(frames)
+            # La plus récente seulement.
+            while (newer := self.pipe.wait_for_frames(0)) is not None:
+                frames = newer
             color = frames.get_color_frame()
             if color is None or frames.get_depth_frame() is None:
                 continue
@@ -111,3 +132,5 @@ class OrbbecCamera(Source):
             future: Future = self._aligner.submit(self._depth_of, frames)
             self._publish(rgb, t, wall, lambda f=future: f.result(timeout=0.2))
         self.pipe.stop()
+        if self._accel is not None:
+            self._accel.stop()

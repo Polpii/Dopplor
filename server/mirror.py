@@ -176,8 +176,9 @@ class Mirror:
     def lift(self, kind: str, points: np.ndarray, depth: np.ndarray | None, key: str, zref: float | None = None) -> Lifted | None:
         """Pixels + profondeur → 3D caméra. La profondeur fixe la distance de la détection, la
         profondeur relative de MediaPipe donne le relief entre ses points (plus robuste qu'une
-        lecture point par point quand un bras passe devant le corps). `zref` impose la distance
-        (main accrochée au poignet du squelette, visage mesuré par l'écart des yeux)."""
+        lecture point par point quand un bras passe devant le corps). `zref` : distance de secours
+        quand la profondeur manque (main accrochée au poignet du squelette, visage mesuré par
+        l'écart des yeux) ; sans caméra de profondeur, c'est elle qui sert."""
         model = self.source.model
         if model is None:
             return None
@@ -187,7 +188,9 @@ class Mirror:
         # z MediaPipe : profondeur relative, à l'échelle de la largeur de l'image.
         rel = points[:, 2] * w_img / fx
 
-        if depth is not None and zref is None:
+        anchor = zref
+        zref = None
+        if depth is not None:
             samples = []
             H, W = depth.shape
             # Une quarantaine de points suffisent (le visage en a 478) : la médiane est robuste.
@@ -202,6 +205,8 @@ class Mirror:
                         samples.append(float(np.median(valid)) / (1 + rel[i]))
             if len(samples) >= 3:
                 zref = float(np.median(samples))
+        if zref is None:
+            zref = anchor
         if zref is None:
             zref = self._size_estimate(kind, u, v, fx)
             # Main ou visage de loin : trop petit pour se mesurer, on prend la distance du corps.

@@ -19,4 +19,12 @@ sudo apt-get install -y python3-venv python3-pip v4l-utils xdotool x11-utils unc
 command -v chromium >/dev/null || sudo snap install chromium
 
 ./scripts/update.sh
+
+# Caméra Orbbec (profondeur, alignement sur le reflet) : le SDK ouvre la caméra par l'USB, ce
+# qui demande la règle d'accès fournie avec lui.
+RULES=$(find .venv -name "99-obsensor-libusb.rules" | head -1)
+if [ -n "$RULES" ]; then
+  sudo cp "$RULES" /etc/udev/rules.d/
+  sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+fi
 echo "Prêt. Lance la démo avec ./scripts/demo.sh"
