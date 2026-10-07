@@ -92,6 +92,8 @@ async function main(): Promise<void> {
   source.onResult = (kind, detections, timestamp, raw) => {
     scene.update(kind, raw ?? detections, timestamp);
     if (raw) reflected.update(kind, detections, timestamp);
+    // Rien de détecté (ou pas calé sur le reflet cette fois) : la version reflet aussi perd ses points.
+    else if (source.space?.() === "screen") reflected.update(kind, [], timestamp);
     if (noVsync) draw(performance.now());
   };
   source.onError = (message) => setStatus(message, message !== "");
