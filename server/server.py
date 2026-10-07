@@ -207,6 +207,8 @@ def main() -> None:
                 elif cmd.get("cmd") == "calibration" and isinstance(cmd.get("data"), dict):
                     mirror.set_calibration(cmd["data"])
                     hub.broadcast(stats())
+                elif cmd.get("cmd") == "trace":
+                    pipeline.start_trace(float(cmd.get("seconds", 10)), Path.home() / ".cache" / "dopplor" / "trace.pkl")
                 elif cmd.get("cmd") == "preview":
                     (hub.preview_clients.add if cmd.get("on") else hub.preview_clients.discard)(ws)
         finally:

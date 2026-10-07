@@ -107,6 +107,8 @@ class Lifted:
     source: str = ""
     #: Part des points dont la profondeur vient directement du capteur.
     measured: float = 0.0
+    #: Profondeur lue sous chaque point (NaN si aucune), pour le diagnostic.
+    depth_pts: np.ndarray | None = None
 
 
 @dataclass
@@ -269,7 +271,7 @@ class Mirror:
                         if 0.3 < zi < 8:
                             z[i] = zi
         z = self._steady_depth(key, z, measured if kind in ("pose", "hands") else None)
-        return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share)
+        return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share, measured)
 
     @staticmethod
     def _window(kind: str, u: np.ndarray, v: np.ndarray) -> int:

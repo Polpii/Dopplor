@@ -333,11 +333,33 @@ class Pipeline:
         self._band: tuple[int, int] | None = None
         self._band_lost = 0
         self._probe_at = 0.0
+        #: Enregistrement de diagnostic (commande « trace ») : tout ce qui est calculé, image par image.
+        self._trace: dict | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
     def start(self) -> "Pipeline":
         self._thread.start()
         return self
+
+    def start_trace(self, seconds: float, path: Path) -> None:
+        """Enregistre `seconds` secondes de calcul (points bruts, profondeur, 3D, œil, bande,
+        écran) dans `path` (pickle), pour comprendre d'où viennent les sauts."""
+        self._trace = {"until": time.monotonic() + seconds, "rows": [], "path": path}
+        log.info("enregistrement de diagnostic : %.0f s → %s", seconds, path)
+
+    def _record(self, row: dict) -> None:
+        tr = self._trace
+        if tr is None:
+            return
+        if time.monotonic() < tr["until"]:
+            tr["rows"].append(row)
+            return
+        self._trace = None
+        import pickle
+
+        with open(tr["path"], "wb") as f:
+            pickle.dump(tr["rows"], f)
+        log.info("diagnostic enregistré : %d lignes", len(tr["rows"]))
 
     def set_pose_model(self, model: str) -> None:
         if model in POSE_MODELS:
@@ -478,6 +500,7 @@ class Pipeline:
             if np.hypot(*(center - tracked)) < 0.12 or abs(tracked[0] - 0.5) <= abs(center[0] - 0.5):
                 return  # c'est la même personne, ou celle suivie est déjà la plus au centre
         log.info("recentrage sur la personne au centre (x %.2f)", center[0])
+        self._record({"t": frame.t, "kind": "recentrage", "x": float(center[0])})
         self._band = None
         self._band = self._band_around(found[0].points, w)
         self._focus = center
@@ -540,11 +563,14 @@ class Pipeline:
             self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
             self._pose_pts = dets[0].points
         # L'œil : iris du visage (précis), sinon yeux du squelette.
+        eye_src, eye_raw = None, None
         if kind == "face" and lifted[0] is not None and len(dets[0].points) > 473:
-            m.update_eye((lifted[0].xyz[468] + lifted[0].xyz[473]) / 2)
+            eye_src, eye_raw = "visage", (lifted[0].xyz[468] + lifted[0].xyz[473]) / 2
             self._face_eye_at = frame.t
         elif kind == "pose" and lifted[0] is not None and frame.t - self._face_eye_at > 0.3:
-            m.update_eye((lifted[0].xyz[2] + lifted[0].xyz[5]) / 2)
+            eye_src, eye_raw = "squelette", (lifted[0].xyz[2] + lifted[0].xyz[5]) / 2
+        if eye_raw is not None:
+            m.update_eye(eye_raw)
         out = []
         for d, l in zip(dets, lifted):
             uv = m.project(l.xyz) if l is not None else None
@@ -553,6 +579,19 @@ class Pipeline:
             points = d.points.copy()
             points[:, :2] = uv
             out.append(Detection(points, d.key, d.label, d.expressions))
+        if self._trace is not None:
+            l0 = lifted[0]
+            eye_m = m.to_mirror(eye_raw.reshape(1, 3))[0] if eye_raw is not None else None
+            self._record({
+                "t": frame.t, "id": frame.id, "kind": kind, "key": dets[0].key,
+                "pts": dets[0].points.copy() if kind != "face" else None,
+                "depth": None if l0 is None or l0.depth_pts is None or kind == "face" else l0.depth_pts.copy(),
+                "xyz": None if l0 is None or kind == "face" else l0.xyz.copy(),
+                "screen": out[0].points[:, :2].copy() if kind != "face" else None,
+                "eye": None if m.state.eye is None else m.state.eye.copy(),
+                "eye_src": eye_src, "eye_raw": eye_m,
+                "band": self._band, "source": None if l0 is None else l0.source,
+            })
         return out, "screen"
 
     def _process(self, frame: Frame) -> None:
