@@ -13,6 +13,7 @@ class FakeSource:
     model = None
     width = 1280
     height = 720
+    mount_roll = 0.0
 
     def up(self):
         return np.array([0.0, -1.0, 0.0])

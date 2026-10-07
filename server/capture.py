@@ -7,6 +7,7 @@ d'attente, donc aucun retard qui s'accumule.
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,19 @@ class CameraModel:
     height: int
     K: np.ndarray  # matrice intrinsèque 3×3
     dist: np.ndarray  # distorsion OpenCV (k1, k2, p1, p2, k3, k4, k5, k6)
+
+
+#: Champ de vision de la caméra couleur (degrés, horizontal × vertical) en 16:9, d'après les
+#: fiches techniques : sert à passer en 3D quand le pilote ne donne pas l'optique (lecture V4L2).
+KNOWN_FOV = {"Femto Bolt": (80.0, 51.0)}
+
+
+def model_from_fov(width: int, height: int, hfov: float, vfov: float) -> CameraModel:
+    """Optique idéale (sans distorsion) d'une caméra dont on connaît le champ de vision."""
+    fx = (width / 2) / math.tan(math.radians(hfov / 2))
+    fy = (height / 2) / math.tan(math.radians(vfov / 2))
+    K = np.array([[fx, 0, (width - 1) / 2], [0, fy, (height - 1) / 2], [0, 0, 1]], dtype=np.float64)
+    return CameraModel(width, height, K, np.zeros(8))
 
 
 @dataclass
@@ -86,9 +100,19 @@ class Source:
         with self._cond:
             return self._frame
 
+    #: Rotation de la caméra autour de son axe (°), déduite de la rotation de l'image : une
+    #: caméra posée à la verticale pour un écran en portrait est tournée d'un quart de tour.
+    MOUNT_ROLL = {0: 0.0, 90: 90.0, 180: 180.0, 270: -90.0}
+
+    @property
+    def mount_roll(self) -> float:
+        return self.MOUNT_ROLL[self.rotate]
+
     def up(self) -> np.ndarray | None:
-        """Direction du haut (vecteur unitaire, repère caméra) mesurée par un capteur, si dispo."""
-        return None
+        """Direction du haut (vecteur unitaire, repère du capteur). Sans accéléromètre : celle
+        d'une caméra droite (ni penchée en avant ni en arrière), tournée comme l'image l'indique."""
+        r = math.radians(self.mount_roll)
+        return np.array([-math.sin(r), -math.cos(r), 0.0])
 
     def to_sensor(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Pixels de l'image tournée → pixels du capteur (image d'origine)."""
@@ -141,10 +165,14 @@ class Camera(Source):
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # le pilote ne garde qu'une image d'avance
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        sensor_w, sensor_h = self.width, self.height
         if rotate in (90, 270):
             self.width, self.height = self.height, self.width
         got = int(self.cap.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, "little").decode(errors="replace")
         self.name = camera_name(device)
+        fov = next((f for key, f in KNOWN_FOV.items() if key.lower() in self.name.lower()), None)
+        if fov:
+            self.model = model_from_fov(sensor_w, sensor_h, *fov)
         if linux:
             v4l2_controls(device, exposure)
         log.info("caméra %s : %dx%d %s à %s fps demandés", self.name, self.width, self.height, got, fps)

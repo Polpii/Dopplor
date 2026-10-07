@@ -147,7 +147,9 @@ class Mirror:
     def up(self) -> np.ndarray | None:
         c = self.calibration
         if c.pitch is not None or c.roll is not None:
-            return up_from_angles(c.pitch or 0.0, c.roll or 0.0)
+            # Roulis non précisé : celui du montage (caméra tournée pour un écran en portrait).
+            roll = c.roll if c.roll is not None else self.source.mount_roll
+            return up_from_angles(c.pitch or 0.0, roll)
         return self.source.up()
 
     def tilt(self) -> tuple[float, float] | None:
