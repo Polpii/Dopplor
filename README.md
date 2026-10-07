@@ -36,6 +36,8 @@ A few things that took some trial and error:
 
 ## Modes
 
+At startup the mirror shows nothing: it's just a mirror. Each mode is switched on and off from the menu: pick it to turn it on, pick it again to turn it off, and the bubbles of the modes that are on glow brighter. The skeleton can be added on top of the other modes; sign language and dance are activities, one at a time. In sign language and dance, your own skeleton is only drawn if the skeleton mode is on. `Escape` closes the menu, then stops the activity, then turns the skeleton off. The debug panel is hidden by default (`H`).
+
 To open the mode menu, make a fist with the palm facing the sky (it lights up), then open it in one go, as if throwing the menu up. The menu shoots out of your fingers. No waiting: the fist only needs to be there before the hand opens.
 
 A fist opening quickly is everywhere in sign language: on about 100 LSF videos (4.5 minutes of signing), a plain fist-then-open fired 36 times. Requiring the palm to face up, on the fist and on the open hand, brings that down to 6. The palm direction comes from the depth MediaPipe estimates for each hand point, which gets noisy when the hand is small in the image, so it's taken as the best of the last three frames. An earlier version made you hold the fist still for 0.4 s instead; it filtered as well but didn't feel smooth. Opening the hand facing the mirror, slowly, while lowering it, or at hip level does nothing. After you close the menu with your fist, opening the hand again won't relaunch it.

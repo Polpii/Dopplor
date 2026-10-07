@@ -94,9 +94,11 @@ async function main(): Promise<void> {
   setStatus("");
   const calibration = new CalibrationPanel((data) => source.setCalibration?.(data));
 
-  // Modes : le squelette (principal) et la langue des signes, choisis dans un menu ouvert d'un
-  // geste (main ouverte levée) ou avec la touche M.
-  const ghost = new Scene(); // double doré du mode langue des signes
+  // Modes, choisis dans le menu (geste ou touche M) : chacun s'allume ou s'éteint quand on le
+  // choisit. Le squelette s'ajoute à ce qu'on fait (on peut danser en le voyant ou non) ; la
+  // langue des signes et la danse sont des activités, une seule à la fois. Au démarrage, rien
+  // n'est affiché : le miroir est un simple miroir.
+  const ghost = new Scene(); // double doré (langue des signes, danse)
   const signs = new SignLanguageMode(scene, ghost, () => source.frameSize(), source.apiBase?.() ?? null, () => renderer.visibleArea());
   const dance = new DanceMode(
     scene,
@@ -106,15 +108,22 @@ async function main(): Promise<void> {
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
   );
-  let mode = "skeleton";
-  const setMode = async (id: string) => {
-    if (id === mode || !(id in MODE_NAMES)) return;
-    if (mode === "signs") signs.exit();
-    if (mode === "dance") dance.exit();
-    mode = id;
-    menu.setCurrent(mode);
-    if (mode === "signs") await signs.enter();
-    if (mode === "dance") dance.enter();
+  let skeleton = false;
+  let activity: "signs" | "dance" | null = null;
+  const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
+  const activeModes = () => [...(skeleton ? ["skeleton"] : []), ...(activity ? [activity] : [])];
+  const choose = async (id: string) => {
+    if (id === "skeleton") skeleton = !skeleton;
+    else if (id === "signs" || id === "dance") {
+      const next = activity === id ? null : id;
+      if (activity === "signs") signs.exit();
+      if (activity === "dance") dance.exit();
+      activity = next;
+      if (activity === "signs") await signs.enter();
+      if (activity === "dance") dance.enter();
+    }
+    menu.setActive(activeModes());
+    updateHud();
   };
   const items: MenuItem[] = [
     { id: "skeleton", label: "Squelette", icon: ICONS.skeleton },
@@ -126,9 +135,9 @@ async function main(): Promise<void> {
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
     () => source.frameSize(),
-    (id) => void setMode(id),
+    (id) => void choose(id),
   );
-  menu.setCurrent(mode);
+  menu.setActive(activeModes());
   if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance });
   setInterval(() => {
     const now = performance.now();
@@ -143,12 +152,16 @@ async function main(): Promise<void> {
   let lead = loadLead();
   let drawnVersion = -1;
   let drawnGhost = -1;
+  let drawnSkeleton = false;
   let lastDraw = 0;
   let draws = 0;
   let latency = 0;
   const draw = (now: number) => {
-    const fading = scene.prune(now) || ghost.prune(now);
-    const predicting = lead > 0 && !scene.empty;
+    // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
+    // squelette est allumé.
+    const userFading = scene.prune(now);
+    const fading = (skeleton && userFading) || ghost.prune(now);
+    const predicting = skeleton && lead > 0 && !scene.empty;
     // Rendu « de prédiction » plafonné pour ne pas voler la carte graphique à l'inférence ; un
     // nouveau résultat, lui, est dessiné tout de suite.
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
@@ -156,16 +169,18 @@ async function main(): Promise<void> {
     if (signs.animating && due) signs.animate(now);
     if (dance.animating && due) dance.animate(now);
     const ui = (menu.animating || dance.animating) && due;
-    if ((predicting && due) || ui || fading || scene.version !== drawnVersion || ghost.version !== drawnGhost) {
+    const userChanged = skeleton && scene.version !== drawnVersion;
+    if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
-      scene.extrapolate(now, lead);
-      renderer.render(scene, now, w, h, source.space?.() ?? "camera", [ghost], (out) => {
+      if (skeleton) scene.extrapolate(now, lead);
+      renderer.render(skeleton ? scene : blank, now, w, h, source.space?.() ?? "camera", [ghost], (out) => {
         dance.draw(out, now);
         menu.draw(out, now);
       });
       drawnVersion = scene.version;
       drawnGhost = ghost.version;
+      drawnSkeleton = skeleton;
       draws++;
       // Latence capture → image dessinée (hors affichage de l'écran lui-même).
       const l = source.latency();
@@ -191,7 +206,7 @@ async function main(): Promise<void> {
     hudRender.textContent = `${draws * 2} img/s · ${w}×${h}`;
     hudLatency.textContent = latency ? `${Math.round(latency)} ms capture → rendu` : "–";
     hudPrediction.textContent = lead > 0 ? `${lead} ms d'avance` : "désactivée";
-    hudMode.textContent = MODE_NAMES[mode];
+    hudMode.textContent = activeModes().map((m) => MODE_NAMES[m]).join(" + ") || "rien (miroir)";
     hudGpu.textContent = source.gpu() || "…";
     hudGpu.classList.toggle("warn", /Radeon\(TM\) Graphics|Intel|SwiftShader|llvmpipe|Basic Render|^CPU$/i.test(source.gpu()));
     draws = 0;
@@ -218,13 +233,13 @@ async function main(): Promise<void> {
       if (e.key === "Escape") (e.target as HTMLInputElement).blur();
       return;
     }
-    if (mode === "signs" && signs.onKey(e)) return;
-    if (mode === "dance" && dance.onKey(e)) return;
+    if (activity === "signs" && signs.onKey(e)) return;
+    if (activity === "dance" && dance.onKey(e)) return;
     // Menu ouvert : 1, 2, 3… choisissent un mode au clavier.
     const pick = menu.open ? items[Number(e.key) - 1] : undefined;
     if (pick) {
       menu.toggle();
-      await setMode(pick.id);
+      await choose(pick.id);
       return;
     }
     switch (e.key.toLowerCase()) {
@@ -256,8 +271,10 @@ async function main(): Promise<void> {
         menu.toggle();
         break;
       case "escape":
+        // Ferme le menu, sinon arrête l'activité en cours, sinon éteint le squelette.
         if (menu.open) menu.toggle();
-        else await setMode("skeleton");
+        else if (activity) await choose(activity);
+        else if (skeleton) await choose("skeleton");
         break;
       case "k":
         calibration.toggle();

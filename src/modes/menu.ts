@@ -40,7 +40,8 @@ const ARC_STEP = (50 * Math.PI) / 180;
 
 const COLOR: Record<string, RGB> = {
   idle: hexToRgb("#7fdcff"),
-  current: hexToRgb("#a78bfa"),
+  /** Mode allumé : plus lumineux, blanc chaud. */
+  active: hexToRgb("#fff1c9"),
   hover: hexToRgb("#ffffff"),
   progress: hexToRgb("#ffd36b"),
   cursor: hexToRgb("#5ef2ff"),
@@ -78,7 +79,7 @@ export class Menu {
   private lastTrack = 0;
   private pinching = false;
   private flash: { x: number; y: number; at: number; kind: "select" | "close" } | null = null;
-  private current = "";
+  private active = new Set<string>();
 
   constructor(
     private items: MenuItem[],
@@ -101,8 +102,9 @@ export class Menu {
     return this.isOpen || this.seed.level > 0.01 || this.seed.target > 0 || (this.flash !== null && performance.now() - this.flash.at < 600);
   }
 
-  setCurrent(id: string): void {
-    this.current = id;
+  /** Modes allumés : leur bulle brille davantage (la choisir à nouveau les éteint). */
+  setActive(ids: Iterable<string>): void {
+    this.active = new Set(ids);
   }
 
   /** Touche M : ouvre au centre de l'écran, ou ferme. */
@@ -316,16 +318,19 @@ export class Menu {
       const x = this.origin[0] + (p.x - this.origin[0]) * k;
       const y = this.origin[1] + (p.y - this.origin[1]) * k;
       const hovered = p === this.hovered;
-      const color = hovered ? COLOR.hover : p.item.id === this.current ? COLOR.current : COLOR.idle;
+      const on = this.active.has(p.item.id);
+      const color = hovered ? COLOR.hover : on ? COLOR.active : COLOR.idle;
       const r = itemR * (hovered ? 1.12 : 1) * (0.4 + 0.6 * k);
-      ring(out, x, y, r, 0, 1, width, color, hovered ? 1.3 : 0.75);
-      for (const s of p.item.icon) icon(out, s, x, y, r * 0.48, width * 0.9, color, hovered ? 1.4 : 0.9);
+      // Allumé : anneau plus lumineux et doublé d'un halo intérieur, icône plus vive.
+      ring(out, x, y, r, 0, 1, width * (on ? 1.4 : 1), color, hovered ? 1.3 : on ? 1.5 : 0.6);
+      if (on) ring(out, x, y, r * 0.86, 0, 1, width * 0.6, color, 0.45);
+      for (const s of p.item.icon) icon(out, s, x, y, r * 0.48, width * 0.9, color, hovered ? 1.4 : on ? 1.5 : 0.75);
       if (hovered) {
         const progress = Math.min(1, (now - this.hoverSince) / DWELL_MS);
         ring(out, x, y, r * 1.25, 0, progress, width * 1.6, COLOR.progress, 1.5);
       }
       // Les noms n'apparaissent qu'une fois le bouton en place (écrire le DOM seulement si ça change).
-      const opacity = (Math.min(1, Math.max(0, k * 2 - 1)) * (hovered ? 1 : 0.7)).toFixed(2);
+      const opacity = (Math.min(1, Math.max(0, k * 2 - 1)) * (hovered || on ? 1 : 0.6)).toFixed(2);
       if (p.label.style.opacity !== opacity) p.label.style.opacity = opacity;
     });
     if (this.cursor) {
