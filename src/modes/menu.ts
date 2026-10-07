@@ -1,9 +1,9 @@
 // Menu des modes, piloté à la main et dessiné par le moteur néon (pas d'effets CSS coûteux).
 //
-//   Ouvrir : lever la main ouverte, paume vers le miroir, et la tenir ~1 s (voir PalmHold) ;
-//            un anneau se remplit autour de la paume, le menu éclot quand il est plein. Touche M.
+//   Ouvrir : main paume vers le ciel, bouts des doigts réunis, qui s'ouvre d'un coup en montant
+//            un peu (voir BloomGesture) ; le menu éclot du bout des doigts. Touche M.
 //   Choisir : garder l'index sur un mode (~0,8 s) ou pincer pouce + index.
-//   Fermer : fermer le poing et le garder fermé (le menu se replie dans la main), ou « Fermer ».
+//   Fermer : fermer le poing et le garder fermé (le menu se replie dans la main).
 //
 // Le menu ne disparaît pas tout seul quand on baisse la main ou qu'elle sort du champ : il reste
 // jusqu'à ce qu'on le ferme. Seule exception, plus personne devant le miroir pendant un moment.
@@ -11,7 +11,7 @@
 // sortie différentes (pas de clignotement), et le curseur est légèrement aimanté.
 import type { Scene } from "../scene";
 import { hexToRgb, type RGB, type SegmentBuffer } from "../render/segments";
-import { PalmHold, handStates, type HandState } from "./gestures";
+import { BloomGesture, handStates, type HandState } from "./gestures";
 
 export interface MenuItem {
   id: string;
@@ -24,7 +24,7 @@ export interface MenuItem {
 export type Stroke = number[] | { c: [number, number]; r: number };
 
 const DWELL_MS = 800;
-const OPEN_MS = 420;
+const OPEN_MS = 560;
 /** Poing tenu pour refermer, et délai après l'ouverture avant que le poing compte. */
 const FOLD_MS = 600;
 const FOLD_GRACE_MS = 700;
@@ -35,7 +35,8 @@ const HAND_HANDOVER_MS = 1000;
 /** Taille des boutons et rayon de l'arc, en fraction du plus petit côté de l'écran. */
 const ITEM_RADIUS = 0.038;
 const ARC_RADIUS = 0.13;
-const ARC_SPREAD = (55 * Math.PI) / 180;
+/** Écart entre deux bulles voisines sur l'arc. */
+const ARC_STEP = (50 * Math.PI) / 180;
 
 const COLOR: Record<string, RGB> = {
   idle: hexToRgb("#7fdcff"),
@@ -53,9 +54,10 @@ interface Placed {
 }
 
 export class Menu {
-  private summon = new PalmHold();
-  /** Appel en cours (anneau autour de la paume), en px d'écran. */
-  private summoning: { x: number; y: number; r: number; progress: number } | null = null;
+  private bloom = new BloomGesture();
+  /** Lueur au bout des doigts réunis (le bouton, avant l'éclosion), en px d'écran ; `level`
+   * suit la présence du bouton en douceur (apparition et disparition fondues). */
+  private seed = { x: 0, y: 0, r: 0, level: 0, target: 0 };
   private isOpen = false;
   private openedAt = 0;
   private closedAt = -Infinity;
@@ -96,7 +98,7 @@ export class Menu {
 
   /** Vrai tant que le menu doit être redessiné (ouvert, appel en cours ou animation). */
   get animating(): boolean {
-    return this.isOpen || this.summoning !== null || (this.flash !== null && performance.now() - this.flash.at < 600);
+    return this.isOpen || this.seed.level > 0.01 || this.seed.target > 0 || (this.flash !== null && performance.now() - this.flash.at < 600);
   }
 
   setCurrent(id: string): void {
@@ -108,7 +110,7 @@ export class Menu {
     if (this.isOpen) this.close(now);
     else {
       const [sw, sh] = this.screen();
-      this.show(now, sw / 2, sh * 0.45, 0, null);
+      this.show(now, [sw / 2, sh * 0.45], [sw / 2, sh * 0.45], 0, null);
     }
   }
 
@@ -117,16 +119,25 @@ export class Menu {
     const hands = handStates(scene, now, w, h);
     for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
-      const { hand, progress, triggered } = this.summon.update(hands, now);
-      if (triggered && now - this.closedAt > 800) {
-        const [x, y] = this.toScreen(...triggered.palm);
-        this.summoning = null;
-        this.show(now, x, y, this.palmOnScreen(triggered), triggered.track.key);
-      } else if (hand && progress > 0.2 && now - this.closedAt > 800) {
-        const [x, y] = this.toScreen(...hand.palm);
-        // L'anneau part de zéro une fois l'intention claire, et se remplit jusqu'à l'ouverture.
-        this.summoning = { x, y, r: this.palmOnScreen(hand) * 1.25, progress: (progress - 0.2) / 0.8 };
-      } else this.summoning = null;
+      const { triggered, seed } = this.bloom.update(hands, now);
+      const ready = now - this.closedAt > 800;
+      if (triggered && ready) {
+        this.seed.target = 0;
+        this.seed.level = 0;
+        this.show(now, this.toScreen(...triggered.palm), this.toScreen(...triggered.tips), this.palmOnScreen(triggered), triggered.track.key);
+        return;
+      }
+      this.seed.target = seed && ready ? 1 : 0;
+      if (seed && ready) {
+        const [x, y] = this.toScreen(...seed.tips);
+        const r = this.palmOnScreen(seed) * 0.35;
+        // La lueur suit les doigts sans à-coups.
+        const k = this.seed.level < 0.05 ? 1 : 0.5;
+        this.seed.x += (x - this.seed.x) * k;
+        this.seed.y += (y - this.seed.y) * k;
+        this.seed.r += (r - this.seed.r) * k;
+      }
+      this.seed.level += (this.seed.target - this.seed.level) * (this.seed.target ? 0.3 : 0.2);
       return;
     }
     this.track(hands, now);
@@ -143,19 +154,22 @@ export class Menu {
 
   // --- Ouverture / fermeture ------------------------------------------------------------------
 
-  private show(now: number, x: number, y: number, palm: number, hand: string | null): void {
+  /** `center` : la paume (l'arc se place au-dessus) ; `from` : le point d'où les bulles éclosent. */
+  private show(now: number, center: [number, number], from: [number, number], palm: number, hand: string | null): void {
+    const [x, y] = center;
     const [sw, sh] = this.screen();
     const unit = Math.min(sw, sh);
     // L'arc passe au-dessus des doigts levés : le bout de l'index ne doit pas tomber sur un bouton.
     const r = Math.max(ARC_RADIUS * unit, palm * 3);
     const margin = (ITEM_RADIUS + 0.04) * unit;
     // Arc au-dessus de la main, gardé dans l'écran.
-    const cx = Math.min(sw - r * Math.sin(ARC_SPREAD) - margin, Math.max(r * Math.sin(ARC_SPREAD) + margin, x));
-    const cy = Math.min(sh - margin, Math.max(r + margin, y));
     const n = this.items.length;
+    const spread = (ARC_STEP * (n - 1)) / 2;
+    const cx = Math.min(sw - r * Math.sin(spread) - margin, Math.max(r * Math.sin(spread) + margin, x));
+    const cy = Math.min(sh - margin, Math.max(r + margin, y));
     this.labels.innerHTML = "";
     this.placed = this.items.map((item, i) => {
-      const a = n === 1 ? 0 : -ARC_SPREAD + (2 * ARC_SPREAD * i) / (n - 1);
+      const a = -spread + ARC_STEP * i;
       const px = cx + Math.sin(a) * r;
       const py = cy - Math.cos(a) * r;
       const label = document.createElement("div");
@@ -168,7 +182,7 @@ export class Menu {
     });
     this.isOpen = true;
     this.openedAt = now;
-    this.origin = [x, y];
+    this.origin = from;
     this.hand = hand;
     this.handSeenAt = now;
     this.personSeenAt = now;
@@ -187,7 +201,7 @@ export class Menu {
     this.hovered = null;
     this.cursor = null;
     this.fold = 0;
-    this.summon.reset();
+    this.bloom.reset();
     this.labels.classList.remove("visible");
   }
 
@@ -275,20 +289,25 @@ export class Menu {
       }
     }
 
-    if (this.summoning) {
-      // Appel : un cercle discret autour de la paume, et un arc qui se remplit.
-      const { x, y, r, progress } = this.summoning;
-      const fade = Math.min(1, progress * 5);
-      ring(out, x, y, r, 0, 1, width * 0.8, COLOR.idle, 0.35 * fade);
-      ring(out, x, y, r, 0, progress, width * 1.6, COLOR.cursor, 1.3 * fade);
+    if (this.seed.level > 0.01) {
+      // Le bouton : une petite lueur qui respire au bout des doigts réunis.
+      const { x, y, r, level } = this.seed;
+      const breath = 1 + 0.12 * Math.sin(now / 140);
+      out.dot(x, y, width * 3.2 * breath, COLOR.cursor, 1.4 * level);
+      ring(out, x, y, Math.max(r, width * 6) * breath, 0, 1, width * 0.7, COLOR.idle, 0.5 * level);
     }
     if (!this.isOpen) return;
 
-    // Éclosion : les boutons sortent de la paume, l'un après l'autre. Repli : ils y retournent.
+    // Éclosion : une onde part du bout des doigts, et les bulles en sortent l'une après l'autre,
+    // avec un léger dépassement avant de se poser. Repli : elles y retournent.
     const t = Math.min(1, (now - this.openedAt) / OPEN_MS);
+    if (t < 1 && this.fold === 0) {
+      const wave = easeOut(Math.min(1, t * 1.6));
+      ring(out, this.origin[0], this.origin[1], itemR * (0.3 + 1.6 * wave), 0, 1, width * 1.2, COLOR.cursor, 1.4 * (1 - wave));
+    }
     const fold = easeIn(this.fold);
     this.placed.forEach((p, i) => {
-      const k = easeOut(Math.min(1, Math.max(0, t * 1.5 - i * 0.18))) * (1 - fold);
+      const k = easeOutBack(Math.min(1, Math.max(0, t * 1.4 - i * 0.14))) * (1 - fold);
       if (k <= 0.01) {
         if (p.label.style.opacity !== "0") p.label.style.opacity = "0";
         return;
@@ -305,7 +324,7 @@ export class Menu {
         ring(out, x, y, r * 1.25, 0, progress, width * 1.6, COLOR.progress, 1.5);
       }
       // Les noms n'apparaissent qu'une fois le bouton en place (écrire le DOM seulement si ça change).
-      const opacity = (Math.max(0, k * 2 - 1) * (hovered ? 1 : 0.7)).toFixed(2);
+      const opacity = (Math.min(1, Math.max(0, k * 2 - 1)) * (hovered ? 1 : 0.7)).toFixed(2);
       if (p.label.style.opacity !== opacity) p.label.style.opacity = opacity;
     });
     if (this.cursor) {
@@ -317,6 +336,8 @@ export class Menu {
 
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
 const easeIn = (t: number) => t * t;
+/** Arrive un peu au-delà puis revient se poser (éclosion souple). */
+const easeOutBack = (t: number) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;
 
 /** Arc de cercle de `from` à `to` (fractions de tour, départ en haut, sens horaire). */
 function ring(out: SegmentBuffer, cx: number, cy: number, r: number, from: number, to: number, width: number, color: RGB, intensity: number): void {
@@ -354,9 +375,5 @@ export const ICONS: Record<string, Stroke[]> = {
     [0.35, 0.05, 0.35, -0.7],
     [0.62, 0.15, 0.62, -0.45],
     [-0.55, 0.15, -0.45, 0.6, 0, 0.85, 0.45, 0.6, 0.62, 0.15],
-  ],
-  close: [
-    [-0.55, -0.55, 0.55, 0.55],
-    [0.55, -0.55, -0.55, 0.55],
   ],
 };

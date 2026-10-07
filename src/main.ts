@@ -108,7 +108,6 @@ async function main(): Promise<void> {
   const items: MenuItem[] = [
     { id: "skeleton", label: "Squelette", icon: ICONS.skeleton },
     { id: "signs", label: "Langue des signes", icon: ICONS.hand },
-    { id: "close", label: "Fermer", icon: ICONS.close },
   ];
   const menu = new Menu(
     items,
@@ -118,6 +117,7 @@ async function main(): Promise<void> {
     (id) => void setMode(id),
   );
   menu.setCurrent(mode);
+  if (import.meta.env.DEV) Object.assign(window, { __menu: menu });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);

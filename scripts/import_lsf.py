@@ -42,6 +42,45 @@ WRISTS = {"left": 15, "right": 16}
 #: Doit correspondre à REST_BELOW dans src/modes/signs.ts : une main plus bas que ça (en
 #: largeurs d'épaules sous les épaules) est au repos, elle ne fait pas partie du signe.
 REST_BELOW = 1.35
+#: Mots gardés (mot de la vidéo → mot affiché), dans l'ordre où le miroir les propose : des mots
+#: simples du quotidien. Lingua Libre a aussi beaucoup de vocabulaire de bibliothèque
+#: (« conseiller », « réservation »…) qu'on laisse de côté. Même ordre que FIRST_WORDS dans
+#: src/modes/sign-language.ts.
+WORDS = {
+    "bonjour": "Bonjour",
+    "salut": "Salut",
+    "coucou (accrocher le regard)": "Coucou",
+    "merci": "Merci",
+    "de rien": "De rien",
+    "s'il vous plait": "S'il vous plaît",
+    "pardon": "Pardon",
+    "oui": "Oui",
+    "au revoir": "Au revoir",
+    "je ne comprends pas": "Je ne comprends pas",
+    "qui": "Qui",
+    "où": "Où",
+    "quand": "Quand",
+    "pourquoi": "Pourquoi",
+    "encore": "Encore",
+    "manger": "Manger",
+    "lire": "Lire",
+    "livre": "Livre",
+    "musique": "Musique",
+    "film": "Film",
+    "jeux": "Jeux",
+    "jouet": "Jouet",
+    "jouets": "Jouet",
+    "peur": "Peur",
+    "lapin": "Lapin",
+    "poisson": "Poisson",
+    "crabe": "Crabe",
+    "cerf": "Cerf",
+    "sanglier": "Sanglier",
+    "coquillage": "Coquillage",
+    "couscous": "Couscous",
+    "théâtre": "Théâtre",
+    "toilettes": "Toilettes",
+}
 #: Les vidéos sont cadrées en buste : une main qui entre par le bas de l'image est au repos.
 BOTTOM_EDGE = 0.92
 
@@ -96,6 +135,8 @@ def list_videos() -> list[dict]:
             m = re.match(r"File:LL-Q33302 \(fsl\)-([^-]+)-(.+)\.\w+$", page["title"])
             # Quelques vidéos sont des essais de caméra (« MRV, R137-cam 720px-light… »), pas des mots.
             if not m or re.search(r"\bcam\b|\blight\b", m.group(2)):
+                continue
+            if re.sub(r"\s*\(\d+\)$", "", m.group(2)).lower() not in WORDS:
                 continue
             videos.append(
                 {
@@ -213,7 +254,7 @@ def to_sign(video: dict, frames: list[dict], w: int, h: int) -> dict:
     word = re.sub(r"\s*\(\d+\)$", "", video["word"])
     return {
         "id": f"lsf-{slug(video['word'])}-{slug(video['speaker'])}",
-        "label": word[:1].upper() + word[1:],
+        "label": WORDS[word.lower()],
         "created": video["uploaded"],
         "width": w,
         "height": h,

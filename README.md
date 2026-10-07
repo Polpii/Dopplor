@@ -36,18 +36,16 @@ A few things that took some trial and error:
 
 ## Modes
 
-To open the mode menu, raise an open hand, palm towards the mirror, and hold it still for about a second. A ring fills up around your palm while you hold, and the menu blooms out of it when the ring is full. Moving the hand cancels it, so waving, passing your hand by your face or signing doesn't open anything. A fingertip that's briefly misread only pauses the ring instead of restarting it, which makes the gesture work from across the room.
+To open the mode menu, hold your hand palm up with the fingertips together, then open it in one go while lifting it a little, like a flower blooming (the HoloLens "bloom"). A small light shows at your fingertips while they're together, and the menu blooms out of them. The hand shape is read in 3D: seen from the front, a palm-up hand has its fingers pointing at the mirror and looks squashed flat, and in 2D it would pass for a fist. The thresholds were tuned on about 100 LSF videos, which are full of hands opening: over 4.5 minutes of continuous signing it fired 4 times, two of them on signs that are nearly the gesture (livre, couscous). Opening the hand facing the mirror or the floor, slowly, or while lowering it doesn't open anything.
 
-Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. The menu doesn't go away on its own when you lower your hand: close your fist and keep it closed, and the menu folds back into your hand (open the fist early to cancel). There's also a Fermer button, and the menu is put away if nobody is in front of the mirror anymore. `M` opens it from the keyboard.
-
-The first version of the gesture (closed hand going up, then opening) was hard to do from a distance, sometimes fired by itself, and pointing with the index looked like a closed fist to it, so the menu closed while you were choosing.
+Point with the index finger and rest on a mode, or pinch thumb and index to pick it right away. The menu doesn't go away on its own when you lower your hand: close your fist and keep it closed, and the menu folds back into your hand (open the fist early to cancel). It's also put away if nobody is in front of the mirror anymore. `M` opens it from the keyboard.
 
 The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same bloom); the first version used CSS glows, which got very slow on a 4K screen.
 
 - **Skeleton**: the default, body + hands + face in neon.
 - **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
 
-There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). That gives about 110 words in `data/lsf/`, starting with bonjour, merci, au revoir. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
+There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). Lingua Libre also has a lot of library vocabulary (conseiller, réservation…), so only about 30 simple everyday words are kept (`WORDS` in the script): greetings, please and thank you, questions, a few verbs and some animals. They're in `data/lsf/`. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
 
 The movement is both what the double replays and the reference it compares you to. The comparison uses dynamic time warping on hand placement relative to the body and hand shape relative to the palm, so it doesn't care how tall you are or how fast you sign. It also accepts the sign done with the other hand, and it wants the movement, not just the right pose. The threshold was tuned on simulated imitators: other body proportions, other speed, sloppier hands. That's a starting point; it still needs tuning with real people.
 
@@ -132,7 +130,7 @@ src/
   calibration.ts     calibration panel
   modes/
     menu.ts          mode menu driven by the hand
-    gestures.ts      hand shape (open, fist, pinch), raise-and-hold to call the menu
+    gestures.ts      hand shape in 3D (fist, pinch, palm up), the bloom gesture
     sign-language.ts sign language mode (learning, golden double, recording)
     signs.ts         sign recording, comparison (DTW) and storage
   scene.ts           tracking, smoothing, expressions

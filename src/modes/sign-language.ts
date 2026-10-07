@@ -44,7 +44,11 @@ const SKIP_MS = 30000;
 /** Au-delà, la progression s'affiche en chiffres plutôt qu'en points. */
 const MAX_DOTS = 12;
 /** Les premiers mots proposés, dans cet ordre (s'ils existent) ; les autres suivent par ordre alphabétique. */
-const FIRST_WORDS = ["bonjour", "merci", "au revoir", "oui", "s'il vous plait", "de rien", "pardon", "salut", "je ne comprends pas", "pourquoi", "musique", "livre", "film", "lire"];
+const FIRST_WORDS = [
+  "bonjour", "salut", "coucou", "merci", "de rien", "s'il vous plait", "pardon", "oui", "au revoir", "je ne comprends pas",
+  "qui", "ou", "quand", "pourquoi", "encore", "manger", "lire", "livre", "musique", "film", "jeux", "jouet", "peur",
+  "lapin", "poisson", "crabe", "cerf", "sanglier", "coquillage", "couscous", "theatre", "toilettes",
+];
 /** Comparaison de mots sans majuscules ni accents (« plaît » = « plait »). */
 const plain = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 /** Entre deux orthographes du même mot, on affiche celle avec accents et sigles en capitales (« Réserver », « BD »). */
