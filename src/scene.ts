@@ -182,7 +182,8 @@ export class Scene {
 
     if (kind === "hands") this.assignHands();
     else if (kind === "face") this.assignFaces();
-    this.version++;
+    // Personne, ni avant ni maintenant : rien n'a changé, pas besoin de redessiner.
+    if (dets.length > 0 || map.size > 0) this.version++;
   }
 
   clear(kind: TaskKind): void {
