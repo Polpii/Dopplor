@@ -111,9 +111,11 @@ export interface SceneOptions {
  * Squelette calé sur le reflet (coordonnées écran) : la prédiction ne s'active que pour un vrai
  * mouvement rapide. Avec les seuils d'origine, le tremblement d'une image à l'autre passait pour
  * de la vitesse et était prolongé (rejoué sur un enregistrement : sauts doublés). Mesuré : petit
- * tremblement divisé par deux, sans retard en plus pendant un mouvement.
+ * tremblement divisé par deux, sans retard en plus pendant un mouvement. Lissage du corps plus
+ * réactif au mouvement (beta 30) : sur un bras simulé qui bouge (banc d'essai), dessin 3,2 cm
+ * derrière la vraie position au lieu de 4,1 ; immobile, aussi stable (0,1 cm au pire).
  */
-export const REFLECTED: SceneOptions = { predictSpeed: [0.25, 0.7] };
+export const REFLECTED: SceneOptions = { predictSpeed: [0.25, 0.7], smoothing: { pose: [1.0, 30] } };
 
 export class Scene {
   readonly tracks: Record<TaskKind, Map<string, Track>> = { pose: new Map(), hands: new Map(), face: new Map() };

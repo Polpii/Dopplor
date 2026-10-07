@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -186,7 +187,7 @@ class Mirror:
 
     # --- 3D ----------------------------------------------------------------------------
 
-    def lift(self, kind: str, points: np.ndarray, depth: np.ndarray | None, key: str, zref: float | None = None) -> Lifted | None:
+    def lift(self, kind: str, points: np.ndarray, depth: np.ndarray | None, key: str, zref: float | None = None, t: float | None = None) -> Lifted | None:
         """Pixels + profondeur → 3D caméra. La profondeur fixe la distance de la détection, la
         profondeur relative de MediaPipe donne le relief entre ses points (plus robuste qu'une
         lecture point par point quand un bras passe devant le corps). `zref` : distance de secours
@@ -278,7 +279,7 @@ class Mirror:
                         zi = -(floor_h - above) / denom
                         if 0.3 < zi < 8:
                             z[i] = zi
-        z = self._steady_depth(key, z, measured if kind in ("pose", "hands") else None)
+        z = self._steady_depth(key, z, measured if kind in ("pose", "hands") else None, time.monotonic() if t is None else t)
         return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share, measured)
 
     @staticmethod
@@ -338,26 +339,49 @@ class Mirror:
         front = valid[valid <= near + 0.07]
         return float(np.median(front)) if front.size >= 4 else float("nan")
 
-    def _steady_depth(self, key: str, z: np.ndarray, measured: np.ndarray | None) -> np.ndarray:
+    #: Filtre « One Euro » de la profondeur (fréquence de coupure au repos en Hz, et réactivité
+    #: en fonction de la vitesse en m/s) : très lisse à l'arrêt (bruit du capteur ~1 cm), réactif
+    #: dès qu'un point bouge vraiment, sans paliers. Réglé sur le banc d'essai (bench_motion.py).
+    Z_MIN_CUTOFF = 1.5
+    Z_BETA = 6.0
+    Z_D_CUTOFF = 1.0
+    #: Anti-pic : un écart soudain de plus de Z_SPIKE (m) est retenu une image, et n'est accepté
+    #: que s'il se confirme à l'image suivante. Un mouvement normal (quelques mm par image) passe
+    #: sans aucun retard ; un pixel « volant » d'une image disparaît. "median" : médiane des 3
+    #: dernières (retarde tout d'une image), "off" : rien.
+    Z_DESPIKE = "jump"
+    Z_SPIKE = 0.08
+
+    def _steady_depth(self, key: str, z: np.ndarray, measured: np.ndarray | None, t: float) -> np.ndarray:
         """Profondeur stable dans le temps, point par point :
         - point sans mesure cette fois : il garde sa valeur (plutôt que de sauter sur le relief
           deviné par MediaPipe, très différent, puis de revenir à la mesure) ;
         - médiane des 3 dernières valeurs : un saut isolé d'une image disparaît ;
-        - lissage fort quand le point bouge peu (bruit du capteur), réactif quand il bouge
-          vraiment."""
+        - filtre One Euro : lisse à l'arrêt, réactif en mouvement."""
         state = self.state.z_smooth.get(key)
         if state is None or len(state["out"]) != len(z):
-            self.state.z_smooth[key] = {"hist": [z.copy()], "out": z.copy()}
+            self.state.z_smooth[key] = {"hist": [z.copy()], "out": z.copy(), "dz": np.zeros_like(z), "t": t}
             return z
         if measured is not None:
             z = np.where(np.isnan(measured) & ~np.isnan(state["out"]), state["out"], z)
         hist = (state["hist"] + [z.copy()])[-3:]
-        med = np.median(np.stack(hist), axis=0)
+        pending = state.get("pending", np.zeros(len(z), bool))
+        if self.Z_DESPIKE == "median":
+            x = np.median(np.stack(hist), axis=0)
+        elif self.Z_DESPIKE == "jump":
+            jump = np.abs(z - state["out"]) > self.Z_SPIKE
+            hold = jump & ~pending  # premier saut : on attend confirmation
+            x = np.where(hold, state["out"], z)
+            pending = hold
+        else:
+            x = z
+        dt = min(0.2, max(1e-3, t - state["t"]))
+        alpha = lambda cutoff: 1.0 / (1.0 + 1.0 / (2 * np.pi * cutoff * dt))  # noqa: E731
         prev = state["out"]
-        step = np.abs(med - prev)
-        k = np.where(step < 0.03, 0.15, np.where(step < 0.10, 0.35, 0.8))
-        out = prev + (med - prev) * k
-        self.state.z_smooth[key] = {"hist": hist, "out": out}
+        dz = state["dz"] + alpha(self.Z_D_CUTOFF) * ((x - prev) / dt - state["dz"])
+        cutoff = self.Z_MIN_CUTOFF + self.Z_BETA * np.abs(dz)
+        out = prev + alpha(cutoff) * (x - prev)
+        self.state.z_smooth[key] = {"hist": hist, "out": out, "dz": dz, "t": t, "pending": pending}
         return out
 
     #: Points des pieds MediaPipe et leur hauteur au-dessus du sol (m) : chevilles, talons, orteils.

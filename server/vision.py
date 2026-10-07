@@ -573,7 +573,7 @@ class Pipeline:
                     return float(pose[0, 2])
             return None
 
-        lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}", zref(d)) for d in dets]
+        lifted = [m.lift(kind, d.points, depth, f"{kind}:{d.key}", zref(d), frame.t) for d in dets]
         self._debug = [
             {"src": l.source, "mesuré": round(l.measured, 2), "z": round(float(np.median(l.xyz[:, 2])), 3)} if l is not None else None
             for l in lifted

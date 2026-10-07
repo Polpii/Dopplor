@@ -219,10 +219,10 @@ async function main(): Promise<void> {
     if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;
       const [w, h] = source.frameSize();
-      // Calé sur le reflet : avance plafonnée à 80 ms, la latence réelle (caméra, calcul, écran).
+      // Calé sur le reflet : avance plafonnée à 60 ms (le meilleur sur le banc d'essai).
       // Au-delà, la prédiction dépasse puis revient à chaque arrêt : des sauts (mesuré, 150 ms
       // doublait les plus grands écarts d'une image à l'autre pour le même suivi en mouvement).
-      if (skeleton) user.extrapolate(now, aligned ? Math.min(lead, 80) : lead);
+      if (skeleton) user.extrapolate(now, aligned ? Math.min(lead, 60) : lead);
       renderer.render(skeleton ? user : blank, now, w, h, aligned ? "screen" : "camera", [ghost], (out) => {
         dance.draw(out, now);
         menu.draw(out, now);
