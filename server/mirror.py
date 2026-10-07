@@ -38,7 +38,10 @@ class Calibration:
     camera_front: float = 3.0
     #: Rotation de la caméra autour de la verticale (°), positif = tournée vers la droite de la personne.
     yaw: float = 0.0
-    #: Inclinaison : None = mesurée par l'accéléromètre ; sinon valeurs imposées (°).
+    #: Orientation de la caméra par rapport à l'écran (°). None = mesurée (sol, accéléromètre),
+    #: ce qui suppose un écran parfaitement vertical. Une caméra fixée sur l'écran penche avec
+    #: lui : il faut alors donner son orientation par rapport à l'écran (0 et -90 pour une caméra
+    #: à plat le long du bord). Un écran penché de 2,3° renvoie le reflet de 4,6° : ~16 cm à 2 m.
     pitch: float | None = None
     roll: float | None = None
     #: Taille de la zone d'affichage (cm) et écart entre la vitre et la dalle.
