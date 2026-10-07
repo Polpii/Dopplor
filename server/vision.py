@@ -391,7 +391,7 @@ class Pipeline:
         t0 = time.perf_counter()
         dets = self.tasks[kind].detect(frame, rois, band)
         if kind == "pose":
-            dets = self._same_person(frame, self._pick_person(dets))
+            dets = self._same_person(frame, self._near_enough(frame, self._pick_person(dets)))
         infer = (time.perf_counter() - t0) * 1000
         self.stats[kind].add(infer)
         self.zoomed[kind] = rois is not None
@@ -440,6 +440,29 @@ class Pipeline:
         best = max(dets, key=score)
         self._focus = self._torso_center(best.points)
         return [best]
+
+    # --- Seulement les personnes devant le miroir ---------------------------------------------------
+
+    #: Au-delà, ce n'est pas quelqu'un qui joue avec le miroir (on s'y tient à ~2 m) : quelqu'un au
+    #: fond de la pièce, ou une fausse détection (une chaise de bureau à 4 m, prise pour une
+    #: personne avec une confiance de 0,8, faisait danser un squelette quand le miroir était vide).
+    MAX_DISTANCE = 3.0
+    #: Sans profondeur : épaules plus petites que ça (px) = trop loin.
+    MIN_SHOULDERS_PX = 35
+
+    def _near_enough(self, frame: Frame, dets: list[Detection]) -> list[Detection]:
+        if not dets:
+            return dets
+        p = dets[0].points
+        h, w = frame.rgb.shape[:2]
+        depth = self._depth_of(frame)
+        if depth is not None:
+            u, v = self.source.to_sensor(p[[11, 12, 23, 24], 0] * w, p[[11, 12, 23, 24], 1] * h)
+            z = Mirror._surface_depths(depth, u, v, 6)
+            if np.isfinite(z).any():
+                return dets if float(np.nanmedian(z)) <= self.MAX_DISTANCE else []
+        shoulders = float(np.hypot((p[11, 0] - p[12, 0]) * w, (p[11, 1] - p[12, 1]) * h))
+        return dets if shoulders >= self.MIN_SHOULDERS_PX else []
 
     # --- Ne pas sauter d'une personne à l'autre ----------------------------------------------------
 
@@ -520,6 +543,7 @@ class Pipeline:
             found = task._unpack(task.probe.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)))
         except Exception:  # noqa: BLE001
             return
+        found = self._near_enough(frame, found)  # pas une chaise ou quelqu'un au fond
         if not found:
             return
         center = self._torso_center(found[0].points)
