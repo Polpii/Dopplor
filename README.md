@@ -106,7 +106,7 @@ On a laptop with two GPUs, Windows usually runs the browser on the integrated on
 | `1` `2` `3` | toggle body / hands / face |
 | `P` | cycle the body model: lite, full, heavy |
 | `↑` `↓` | more / less prediction (latency compensation) |
-| `M` | mode menu (or raise an open hand) |
+| `M` | mode menu (or the bloom gesture) |
 | `R` `←` `→` `Suppr` | sign language mode: record a sign, previous / next, delete |
 | `K` | calibration panel (alignment with the reflection) |
 | `F` | fullscreen |
