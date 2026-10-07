@@ -125,6 +125,8 @@ class MirrorState:
     #: Profondeur lissée de chaque point, par détection : le bruit du capteur (1 à 2 cm, plus
     #: sur les bords) faisait trembler le reflet calculé.
     z_smooth: dict = field(default_factory=dict)
+    #: Dernières positions brutes des yeux (médiane).
+    eye_hist: list = field(default_factory=list)
 
 
 class Mirror:
@@ -200,21 +202,25 @@ class Mirror:
         anchor = zref
         zref = None
         source = ""
-        # Profondeur mesurée sous chaque point (médiane d'une petite fenêtre), NaN si inconnue.
+        # Profondeur mesurée sous chaque point (surface la plus proche autour de lui), NaN si
+        # inconnue ou incohérente.
         measured = np.full(len(points), np.nan)
         if depth is not None:
-            H, W = depth.shape
             # Visage : une quarantaine de points suffisent (il en a 478) ; corps et mains : tous.
             step = max(1, len(points) // 40) if kind == "face" else 1
+            radius = self._window(kind, u, v)
             for i in range(0, len(points), step):
                 if kind == "pose" and points[i, 3] < 0.5:
                     continue
-                x, y = int(round(u[i])), int(round(v[i]))
-                if 2 <= x < W - 2 and 2 <= y < H - 2:
-                    patch = depth[y - 2 : y + 3, x - 2 : x + 3]
-                    valid = patch[patch > 0]
-                    if valid.size >= 5:
-                        measured[i] = float(np.median(valid))
+                measured[i] = self._surface_depth(depth, u[i], v[i], radius)
+            if kind == "pose":
+                # Une articulation ne peut pas être à plus de ~70 cm devant ou derrière le torse :
+                # sinon on a mesuré le fond, le sol ou quelqu'un d'autre.
+                torso = measured[[11, 12, 23, 24]]
+                torso = torso[~np.isnan(torso)]
+                if torso.size:
+                    far = np.abs(measured - np.median(torso)) > 0.7
+                    measured[far] = np.nan
             ok = ~np.isnan(measured)
             if ok.sum() >= 3:
                 zref = float(np.median(measured[ok] / (1 + rel[ok])))
@@ -263,13 +269,58 @@ class Mirror:
                         zi = -(floor_h - above) / denom
                         if 0.3 < zi < 8:
                             z[i] = zi
-        # Lissage dans le temps : doux quand le point bouge peu, rapide quand il bouge vraiment.
-        prev = self.state.z_smooth.get(key)
-        if prev is not None and len(prev) == len(z):
-            k = np.where(np.abs(z - prev) > 0.12, 0.8, 0.3)
-            z = prev + (z - prev) * k
-        self.state.z_smooth[key] = z.copy()
+        z = self._steady_depth(key, z, measured if kind in ("pose", "hands") else None)
         return Lifted(np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1), True, source, share)
+
+    @staticmethod
+    def _window(kind: str, u: np.ndarray, v: np.ndarray) -> int:
+        """Rayon (px) de la fenêtre lue autour de chaque point, à l'échelle de la personne : assez
+        grande pour avoir de quoi trier, assez petite pour rester sur le membre."""
+        if kind == "pose" and len(u) > 12:
+            return int(np.clip(0.07 * math.hypot(u[11] - u[12], v[11] - v[12]), 3, 14))
+        if kind == "hands" and len(u) > 9:
+            return int(np.clip(0.2 * math.hypot(u[0] - u[9], v[0] - v[9]), 2, 6))
+        return 3
+
+    @staticmethod
+    def _surface_depth(depth: np.ndarray, x: float, y: float, r: int) -> float:
+        """Profondeur de la surface la plus proche autour d'un point. Un poignet, un coude, un
+        genou sont souvent au bord de la silhouette : la fenêtre mélange le corps et le fond (plus
+        loin), avec des pixels « volants » entre les deux. Le corps étant devant, on garde le
+        groupe de mesures le plus proche (à 7 cm près du 20e centile) et on prend sa médiane."""
+        H, W = depth.shape
+        xi, yi = int(round(x)), int(round(y))
+        if not (r <= xi < W - r and r <= yi < H - r):
+            return float("nan")
+        patch = depth[yi - r : yi + r + 1 : max(1, r // 4), xi - r : xi + r + 1 : max(1, r // 4)]
+        valid = patch[patch > 0]
+        if valid.size < 6:
+            return float("nan")
+        near = np.percentile(valid, 20)
+        front = valid[valid <= near + 0.07]
+        return float(np.median(front)) if front.size >= 4 else float("nan")
+
+    def _steady_depth(self, key: str, z: np.ndarray, measured: np.ndarray | None) -> np.ndarray:
+        """Profondeur stable dans le temps, point par point :
+        - point sans mesure cette fois : il garde sa valeur (plutôt que de sauter sur le relief
+          deviné par MediaPipe, très différent, puis de revenir à la mesure) ;
+        - médiane des 3 dernières valeurs : un saut isolé d'une image disparaît ;
+        - lissage fort quand le point bouge peu (bruit du capteur), réactif quand il bouge
+          vraiment."""
+        state = self.state.z_smooth.get(key)
+        if state is None or len(state["out"]) != len(z):
+            self.state.z_smooth[key] = {"hist": [z.copy()], "out": z.copy()}
+            return z
+        if measured is not None:
+            z = np.where(np.isnan(measured) & ~np.isnan(state["out"]), state["out"], z)
+        hist = (state["hist"] + [z.copy()])[-3:]
+        med = np.median(np.stack(hist), axis=0)
+        prev = state["out"]
+        step = np.abs(med - prev)
+        k = np.where(step < 0.03, 0.15, np.where(step < 0.10, 0.35, 0.8))
+        out = prev + (med - prev) * k
+        self.state.z_smooth[key] = {"hist": hist, "out": out}
+        return out
 
     #: Points des pieds MediaPipe et leur hauteur au-dessus du sol (m) : chevilles, talons, orteils.
     FEET = {27: 0.08, 28: 0.08, 29: 0.04, 30: 0.04, 31: 0.03, 32: 0.03}
@@ -338,8 +389,16 @@ class Mirror:
     def update_eye(self, eye_cam: np.ndarray) -> None:
         eye = self.to_mirror(eye_cam.reshape(1, 3))
         if eye is not None and eye[0, 2] < -0.1:
-            # Les yeux bougent peu et lentement : lissage plus fort (moins de tremblement).
-            self.state.eye = eye[0] if self.state.eye is None else self.state.eye * 0.75 + eye[0] * 0.25
+            # Un saut de la position des yeux décale tout le squelette dessiné : médiane des 3
+            # dernières, puis lissage fort pour le bruit, réactif pour un vrai déplacement.
+            self.state.eye_hist = (self.state.eye_hist + [eye[0]])[-3:]
+            med = np.median(np.stack(self.state.eye_hist), axis=0)
+            if self.state.eye is None:
+                self.state.eye = med
+            else:
+                step = float(np.linalg.norm(med - self.state.eye))
+                k = 0.08 if step < 0.02 else 0.3 if step < 0.08 else 0.7
+                self.state.eye = self.state.eye + (med - self.state.eye) * k
 
     # --- Reflet ------------------------------------------------------------------------
 
