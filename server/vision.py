@@ -344,10 +344,11 @@ class Pipeline:
         self._thread.start()
         return self
 
-    def start_trace(self, seconds: float, path: Path) -> None:
+    def start_trace(self, seconds: float, path: Path, head: bool = False) -> None:
         """Enregistre `seconds` secondes de calcul (points bruts, profondeur, 3D, œil, bande,
-        écran) dans `path` (pickle), pour comprendre d'où viennent les sauts."""
-        self._trace = {"until": time.monotonic() + seconds, "rows": [], "path": path}
+        écran, temps de calcul) dans `path` (pickle), pour comprendre d'où viennent les sauts.
+        `head` : ajoute la tête en pixels bruts à chaque image (lourd : ~1,5 Mo/s)."""
+        self._trace = {"until": time.monotonic() + seconds, "rows": [], "path": path, "head": head}
         log.info("enregistrement de diagnostic : %.0f s → %s", seconds, path)
 
     def _record(self, row: dict) -> None:
@@ -659,7 +660,7 @@ class Pipeline:
             if 0 < dt < 0.2:
                 speed = np.linalg.norm(pose[:, :2] - self._prev_pose[1][:, :2], axis=1) / dt
         self._prev_pose = (frame.t, pose) if pose is not None else None
-        if self._trace is not None and pose is not None:
+        if self._trace is not None and self._trace["head"] and pose is not None:
             # Tête en pixels bruts (sans compression) : pour étudier la couleur de la peau.
             eyes = pose[[2, 5], :2] * [w, h]
             half = max(16, int(2.0 * np.linalg.norm(eyes[0] - eyes[1])))

@@ -106,6 +106,8 @@ export class SignLanguageMode {
   /** Jauge affichée : monte vite, redescend doucement (pas de chiffres qui sautent). */
   private shownScore = 0;
   private active = false;
+  /** Dernière comparaison (diagnostic : enregistrement d'une session sur le miroir). */
+  debug: { at: number; word: string; distance: number; moved: boolean; frames: number; hands: Record<Side, [number, number] | null> } | null = null;
 
   constructor(
     private scene: Scene,
@@ -256,6 +258,11 @@ export class SignLanguageMode {
       return;
     }
     const { distance, moved } = this.compare(target, live);
+    const last = this.live.at(-1)?.features.hands;
+    this.debug = {
+      at: now, word: target.label, distance, moved, frames: live.length,
+      hands: { left: last?.left?.place ?? null, right: last?.right?.place ?? null },
+    };
     // Bonne pose mais sans le mouvement : la jauge s'arrête avant la fin.
     this.setScore(moved ? progress(distance) : Math.min(progress(distance), 0.75));
     this.setHint(!moved && progress(distance) > 0.75 ? "Bonne position… maintenant fais le mouvement" : "Imite ton double doré");

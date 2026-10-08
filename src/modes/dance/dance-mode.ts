@@ -1,4 +1,5 @@
-// Mode danse : on danse côte à côte avec son double doré, sur une musique générée en direct.
+// Mode danse : on danse avec son double doré, posé sur son propre reflet, sur une musique générée
+// en direct : il suffit de se superposer à lui.
 //
 //   Accueil : le double invite en levant les bras ; lever les deux bras (ou Espace) lance la
 //             musique. Décompte « 3, 2, 1, Danse ! » sur les temps.
@@ -13,7 +14,6 @@ import { GHOST_COLOR } from "../../render/figures";
 import { hexToRgb, type RGB, type SegmentBuffer } from "../../render/segments";
 import type { Scene, Track } from "../../scene";
 import { STRIDE } from "../../vision/protocol";
-import { GhostPlacer, type VisibleArea } from "../ghost";
 import { Choreography, invitePose, poseScore, rate, RATINGS, skeleton, type KeyPose, type Rating } from "./choreo";
 import { BEAT, Groove, SONG_SECONDS } from "./music";
 
@@ -30,6 +30,14 @@ const AWAY_MS = 4000;
 const LEAD_BEATS = 4;
 const RESULTS_MIN_MS = 2500;
 const RESULTS_MAX_MS = 25000;
+/** Suivi du double sur le reflet : position (ms), taille (plus lent : on fléchit en dansant). */
+const OVERLAY_FOLLOW_MS = 500;
+const OVERLAY_SIZE_MS = 1500;
+/** Hauteur épaules → chevilles du double debout (en largeurs d'épaules). */
+const GHOST_HEIGHT = (() => {
+  const p = skeleton({ aL: 20, fL: 20, aR: 20, fR: 20 });
+  return (p[27][1] + p[28][1]) / 2;
+})();
 
 const COLOR: Record<Rating | "user" | "ghost" | "marker", RGB> = {
   parfait: hexToRgb("#ffd36b"),
@@ -58,7 +66,7 @@ export class DanceMode {
   private stateSince = 0;
   private music = new Groove();
   private choreo = new Choreography();
-  private placer = new GhostPlacer();
+  private overlay: { x: number; y: number; size: number; at: number } | null = null;
   private idleStart = 0;
   private armsUpSince = 0;
   private personSeenAt = 0;
@@ -91,7 +99,6 @@ export class DanceMode {
     private scene: Scene,
     private ghost: Scene,
     private frameSize: () => [number, number],
-    private visible: () => VisibleArea,
     private toScreen: (x: number, y: number) => [number, number],
     private screen: () => [number, number],
   ) {
@@ -122,7 +129,7 @@ export class DanceMode {
     this.root.classList.remove("hidden");
     this.ghost.clear("pose");
     this.ghost.clear("hands");
-    this.placer.reset();
+    this.overlay = null;
     this.setState("idle", now);
   }
 
@@ -364,16 +371,7 @@ export class DanceMode {
       const t = this.music.time(now) ?? 0;
       pose = this.choreo.poseAt(Math.max(0, t / BEAT));
     } else pose = invitePose((now - this.idleStart) / 1000 / BEAT);
-    const body = this.body();
-    let anchor = null;
-    if (body) {
-      const v = body.smoother.value;
-      const l = [v[11 * STRIDE] * w, v[11 * STRIDE + 1] * h];
-      const r = [v[12 * STRIDE] * w, v[12 * STRIDE + 1] * h];
-      anchor = { center: [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2] as [number, number], scale: Math.max(Math.hypot(l[0] - r[0], l[1] - r[1]), 1) };
-    }
-    // Bras écartés : le double occupe ~1,9 largeur d'épaules de chaque côté.
-    const a = this.placer.place(now, anchor, w, h, this.visible(), 1.9);
+    const a = this.anchor(now, this.body(), w, h);
     const pts = skeleton(pose);
     const out = new Float32Array(33 * 4);
     pts.forEach(([x, y], i) => out.set([(a.x - x * a.size) / w, (a.y + y * a.size) / h, 0, 1], i * 4));
@@ -381,6 +379,42 @@ export class DanceMode {
     for (const t of this.ghost.tracks.pose.values()) t.color = GHOST_COLOR;
     this.ghostFeet = [(out[27 * 4] + out[28 * 4]) / 2, (out[27 * 4 + 1] + out[28 * 4 + 1]) / 2 + 0.06 * (a.size / h)];
     this.ghostSize = a.size;
+  }
+
+  /**
+   * Le double se tient sur le reflet de la personne : mêmes pieds, même taille, pour qu'elle
+   * n'ait qu'à s'y superposer. Centre des épaules et largeur d'épaules du double, en px de
+   * l'image caméra (le rendu le cale ensuite sur le reflet). Le suivi est lent : il reste sur la
+   * personne sans recopier ses mouvements (quand elle fléchit, ses pieds ne bougent pas, lui non
+   * plus). Personne : au milieu de l'image, il invite.
+   */
+  private anchor(now: number, body: Track | null, w: number, h: number): { x: number; y: number; size: number } {
+    let target = { x: w / 2, y: h * 0.4, size: w * 0.18 };
+    if (body) {
+      const v = body.smoother.value;
+      const seen = (i: number) => body.points[i * STRIDE + 3] > 0.5;
+      const px = (i: number): [number, number] => [v[i * STRIDE] * w, v[i * STRIDE + 1] * h];
+      const mid = (a: number, b: number): [number, number] => [(px(a)[0] + px(b)[0]) / 2, (px(a)[1] + px(b)[1]) / 2];
+      const shoulders = mid(11, 12);
+      const hips = mid(23, 24);
+      if (seen(27) && seen(28)) {
+        // En entier : taille d'après la hauteur épaules → chevilles, pieds sur ses pieds.
+        const ankles = mid(27, 28);
+        const size = Math.max(1, (ankles[1] - shoulders[1]) / GHOST_HEIGHT);
+        target = { x: hips[0], y: ankles[1] - GHOST_HEIGHT * size, size };
+      } else {
+        target = { x: shoulders[0], y: shoulders[1], size: Math.max(1, Math.hypot(px(11)[0] - px(12)[0], px(11)[1] - px(12)[1])) };
+      }
+    }
+    const prev = this.overlay;
+    if (!prev) this.overlay = { ...target, at: now };
+    else {
+      const dt = Math.max(0, now - prev.at);
+      const k = 1 - Math.exp(-dt / OVERLAY_FOLLOW_MS);
+      const ks = 1 - Math.exp(-dt / OVERLAY_SIZE_MS);
+      this.overlay = { x: prev.x + (target.x - prev.x) * k, y: prev.y + (target.y - prev.y) * k, size: prev.size + (target.size - prev.size) * ks, at: now };
+    }
+    return this.overlay;
   }
 
   // --- Dessin -----------------------------------------------------------------------------------
@@ -408,7 +442,8 @@ export class DanceMode {
         ellipse(out, feet[0], feet[1], rx * (1 + 0.25 * flash), rx * 0.2 * (1 + 0.25 * flash), width * 1.2, color, 0.35 + 0.5 * pulse + 1.2 * flash);
       }
     }
-    if (this.ghostFeet) {
+    // Le double a son propre halo seulement quand il n'est pas posé sur quelqu'un.
+    if (this.ghostFeet && !body) {
       const feet = this.toScreen(this.ghostFeet[0], this.ghostFeet[1]);
       const rx = this.screenScale(this.ghostSize) * 1.3;
       ellipse(out, feet[0], feet[1], rx, rx * 0.2, width * 1.2, COLOR.ghost, 0.3 + 0.5 * pulse);

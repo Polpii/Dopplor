@@ -118,6 +118,14 @@ const MISSING_HAND = 1.0;
 const PLACE_WEIGHT = 0.5;
 const SHAPE_WEIGHT = 0.4;
 
+/**
+ * Main en trop (en largeurs d'épaules sous les épaules) : comptée en entier à hauteur de signe
+ * (au-dessus de EXTRA_FULL), plus du tout à partir de la taille (EXTRA_NONE).
+ */
+const EXTRA_FULL = 0.5;
+const EXTRA_NONE = 1.0;
+const extraHand = (y: number) => Math.min(1, Math.max(0, (EXTRA_NONE - y) / (EXTRA_NONE - EXTRA_FULL)));
+
 function frameDistance(a: Features, b: Features): number {
   let d = 0;
   for (const side of ["left", "right"] as const) {
@@ -125,7 +133,11 @@ function frameDistance(a: Features, b: Features): number {
     const hb = b.hands[side];
     if (!ha && !hb) continue;
     if (!ha || !hb) {
-      d += MISSING_HAND;
+      // Une main que le signe n'utilise pas : elle ne compte que si elle est levée. Le bras qui
+      // pend, ou la main posée devant le ventre, sont au repos (simulé : avec l'autre main
+      // visible au repos, les bonnes imitations des signes à une main passaient 0 % du temps,
+      // 72 à 88 % maintenant ; les fausses réussites ne bougent presque pas).
+      d += !ha && hb ? MISSING_HAND * extraHand(hb.place[1]) : MISSING_HAND;
       continue;
     }
     const place = Math.hypot(ha.place[0] - hb.place[0], ha.place[1] - hb.place[1]);

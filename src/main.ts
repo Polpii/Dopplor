@@ -112,7 +112,6 @@ async function main(): Promise<void> {
     scene,
     ghost,
     () => source.frameSize(),
-    () => renderer.visibleArea(),
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
   );
@@ -147,6 +146,10 @@ async function main(): Promise<void> {
   );
   menu.setActive(activeModes());
   if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance });
+  // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
+  // des rendus et état des modes, aussi dans la version construite.
+  const drawTimes: number[] = [];
+  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, menu, drawTimes, source } });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -235,6 +238,8 @@ async function main(): Promise<void> {
         dance.draw(out, now);
         menu.draw(out, now);
       });
+      drawTimes.push(now);
+      if (drawTimes.length > 4000) drawTimes.splice(0, 2000);
       drawnVersion = user.version;
       drawnGhost = ghost.version;
       drawnSkeleton = skeleton;
