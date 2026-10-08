@@ -125,11 +125,11 @@ const PEAK = { x: 220, d: 2700, r: 300 };
 const FALLS = { x: riverX(985), d: 985, h: 150 };
 const VILLAGE = { x: 10, d: 335, r: 55 };
 /** Lune : direction (un peu à gauche, basse sur l'horizon). */
-const MOON = new THREE.Vector3(-0.09, 0.13, -0.99).normalize();
+const MOON = new THREE.Vector3(-0.17, 0.2, -0.97).normalize();
 /** Dragon-serpent : nombre d'anneaux, écart entre anneaux (s de trajet), rayon (m). */
-const DRAGON_RINGS = 90;
-const DRAGON_LAG = 0.13;
-const DRAGON_R = 4;
+const DRAGON_RINGS = 120;
+const DRAGON_LAG = 0.12;
+const DRAGON_R = 9;
 /** Bord de la falaise (distance à l'arche, m), irrégulier. */
 const edgeD = (x: number) => 2.6 + 0.6 * noise(x * 0.35, 4.2) + 0.3 * noise(x * 1.3, 9.1);
 
@@ -150,7 +150,8 @@ function height(x: number, d: number): number {
   const pk = Math.hypot(x - PEAK.x, (d - PEAK.d) * 0.8);
   if (pk < PEAK.r * 3) h += Math.exp(-((pk / PEAK.r) ** 2)) * (560 + 90 * ridged(x * 0.004, d * 0.004, 4));
   // Plateau et sa falaise ; la rivière l'entaille là où tombe la cascade.
-  const plateau = smoothstep(FALLS.d - 25, FALLS.d + 8, d) * smoothstep(-430, -330, x) * (1 - smoothstep(60, 150, x));
+  const fd = FALLS.d + 45 * noise(x * 0.012, 7.7) * smoothstep(25, 70, Math.abs(x - FALLS.x));
+  const plateau = smoothstep(fd - 25, fd + 8, d) * smoothstep(-360, -280, x) * (1 - smoothstep(0, 80, x));
   if (plateau > 0) {
     const top = VALLEY + FALLS.h + fbm(x * 0.01, d * 0.01, 3) * 12 - (1 - smoothstep(9, 20, Math.abs(x - FALLS.x))) * 7;
     h = Math.max(h, THREE.MathUtils.lerp(h, top, plateau));
@@ -527,7 +528,7 @@ export class PortalMode {
             vec3 mdir = vec3(${MOON.x.toFixed(4)}, ${MOON.y.toFixed(4)}, ${MOON.z.toFixed(4)});
             vec3 mt = normalize(cross(mdir, vec3(0.0, 1.0, 0.0)));
             vec3 mb = cross(mt, mdir);
-            vec2 mp = vec2(dot(d, mt), dot(d, mb)) / 0.045;
+            vec2 mp = vec2(dot(d, mt), dot(d, mb)) / 0.055;
             float mr = length(mp);
             if (dot(d, mdir) > 0.0 && mr < 1.6) {
               float disk = 1.0 - smoothstep(0.985, 1.0, mr);
@@ -650,7 +651,8 @@ export class PortalMode {
           grass = mix(grass, vec3(0.26, 0.22, 0.09), smoothstep(0.55, 0.8, fbm3(p * 0.006 + 7.0)) * 0.7);
           grass *= 0.85 + 0.3 * n2;
           vec3 col = mix(grass, vec3(0.03, 0.055, 0.02) * (0.8 + 0.4 * n2), vForest);
-          vec3 rock = mix(vec3(0.16, 0.14, 0.12), vec3(0.30, 0.27, 0.23), fbm3(p * 0.05 + vec2(0.0, h * 0.1)));
+          vec3 rock = mix(vec3(0.17, 0.14, 0.11), vec3(0.34, 0.28, 0.21), fbm3(p * 0.05 + vec2(0.0, h * 0.1)));
+          rock *= 0.7 + 0.45 * vnoise(vec2(h * 0.35, p.x * 0.004 + p.y * 0.004)) * (0.6 + 0.4 * vnoise(p * 0.08));
           float rockMask = max(smoothstep(0.28, 0.5, slope + (n1 - 0.5) * 0.2), smoothstep(${(VALLEY + 170).toFixed(1)}, ${(VALLEY + 260).toFixed(1)}, h + n1 * 40.0));
           col = mix(col, rock, rockMask);
           float snow = smoothstep(${(VALLEY + 300).toFixed(1)}, ${(VALLEY + 360).toFixed(1)}, h + n1 * 60.0) * (1.0 - smoothstep(0.45, 0.7, slope));
@@ -879,16 +881,26 @@ export class PortalMode {
           uniform float uTime;
           varying float vH;
           varying float vDry;
+          varying float vSheen;
           void main() {
             mat4 m = modelOf();
             vec4 base = m * vec4(0.0, 0.0, 0.0, 1.0);
             float h = position.y / 0.3;
             vH = h;
             vDry = step(0.82, fract(sin(dot(base.xz, vec2(12.9898, 78.233))) * 43758.5453));
-            float gust = sin(base.x * 0.35 + uTime * 1.6) * 0.5 + sin(base.z * 0.5 + uTime * 1.1 + base.x * 0.2) * 0.5;
+            // Vent : des vagues qui courent sur la prairie, portées par de grandes rafales lentes,
+            // et un frémissement rapide de chaque brin.
+            vec2 wd = normalize(vec2(1.0, -0.35));
+            float along = dot(base.xz, wd);
+            float wave = 0.5 + 0.5 * sin(along * 1.1 - uTime * 2.8 + sin(base.z * 0.7) * 0.6);
+            float gust = smoothstep(0.25, 0.95, 0.5 + 0.5 * sin(along * 0.21 - uTime * 0.85 + sin(base.z * 0.3 + uTime * 0.2) * 1.2));
+            float g = wave * (0.3 + 0.7 * gust);
+            float flutter = sin(uTime * 13.0 + base.x * 17.0 + base.z * 11.0) * 0.012;
+            float bend = (0.025 + 0.16 * g) * h * h;
+            vSheen = g * gust * h;
             vec4 w = m * vec4(position, 1.0);
-            w.x += (0.03 + 0.04 * gust) * h * h;
-            w.z += 0.02 * gust * h * h;
+            w.xz += wd * (bend + flutter * h);
+            w.y -= bend * 0.45 * h;
             vLocal = (uLandInv * w).xyz;
             vN = vec3(0.0, 1.0, 0.0);
             gl_Position = projectionMatrix * viewMatrix * w;
@@ -899,6 +911,7 @@ export class PortalMode {
           varying vec3 vLocal;
           varying float vH;
           varying float vDry;
+          varying float vSheen;
           void main() {
             vec3 tip = mix(vec3(0.06, 0.11, 0.025), vec3(0.20, 0.16, 0.06), vDry);
             vec3 albedo = mix(vec3(0.015, 0.035, 0.008), tip, vH);
@@ -906,6 +919,8 @@ export class PortalMode {
             float trans = pow(max(dot(v, uSun), 0.0), 3.0) * vH;
             vec3 c = albedo * (SUNC * uShade * (0.2 + 0.5 * vH) + ambient(vec3(0.0, 1.0, 0.0)) * (0.35 + 0.65 * vH));
             c += SUNC * vec3(0.12, 0.18, 0.03) * trans * uShade * 0.4;
+            // Brins couchés par la rafale : leur revers clair accroche la lumière.
+            c += (SUNC * uShade * 0.5 + vec3(0.3, 0.35, 0.3)) * vec3(0.07, 0.08, 0.045) * vSheen;
             gl_FragColor = vec4(finish(c), 1.0);
           }`,
         side: THREE.DoubleSide,
@@ -1162,9 +1177,9 @@ export class PortalMode {
   private dragonPath(t: number): THREE.Vector3 {
     const u = t * 0.055;
     return new THREE.Vector3(
-      30 + 280 * Math.sin(u * 0.9) + 70 * Math.sin(u * 2.3 + 1),
-      150 + 45 * Math.sin(u * 1.3) + 18 * Math.sin(u * 3.1),
-      -(1150 + 320 * Math.sin(u * 0.6 + 1) + 60 * Math.sin(u * 1.9)),
+      20 + 300 * Math.sin(u * 0.9) + 80 * Math.sin(u * 2.3 + 1),
+      115 + 40 * Math.sin(u * 1.3) + 15 * Math.sin(u * 3.1),
+      -(820 + 220 * Math.sin(u * 0.6 + 1) + 50 * Math.sin(u * 1.9)),
     );
   }
 
@@ -1177,7 +1192,7 @@ export class PortalMode {
     for (let i = 0; i < DRAGON_RINGS; i++) {
       // Écailles dorées, plus sombres et vertes vers la queue.
       const k = i / DRAGON_RINGS;
-      tint.set([0.42 - 0.12 * k, 0.3 - 0.05 * k, 0.05 + 0.03 * k], i * 3);
+      tint.set([0.36 - 0.1 * k, 0.2 - 0.02 * k, 0.025 + 0.03 * k], i * 3);
     }
     ringGeo.setAttribute("aTint", new THREE.InstancedBufferAttribute(tint, 3));
     ringGeo.setAttribute("aShade", new THREE.InstancedBufferAttribute(new Float32Array(DRAGON_RINGS).fill(1), 1));
@@ -1205,7 +1220,7 @@ export class PortalMode {
             vA = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(uTime * (5.0 + 9.0 * aSeed) + aSeed * 40.0), 3.0);
             vec4 view = viewMatrix * w;
             gl_Position = projectionMatrix * view;
-            gl_PointSize = (3.5 + 3.0 * aSeed) * uRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -view.z);
+            gl_PointSize = (7.0 + 6.0 * aSeed) * uRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -view.z);
           }`,
         fragmentShader: /* glsl */ `
           varying float vA;
@@ -1223,7 +1238,7 @@ export class PortalMode {
     this.add(mane, 5);
 
     // Tête : museau, deux cornes recourbées, deux longues moustaches, des yeux qui brillent.
-    const skin = this.lit({ color: new THREE.Color(0.45, 0.32, 0.06) });
+    const skin = this.lit({ color: new THREE.Color(0.36, 0.2, 0.025) });
     const horn = this.lit({ color: new THREE.Color(0.75, 0.7, 0.55) });
     const glow = this.lit({ color: new THREE.Color(0, 0, 0), emissive: new THREE.Color(0.8, 2.2, 2.6) });
     const head = new THREE.Group();
@@ -1233,7 +1248,7 @@ export class PortalMode {
       const h = new THREE.Mesh(new THREE.ConeGeometry(DRAGON_R * 0.28, DRAGON_R * 3.2, 8), horn);
       h.position.set(side * DRAGON_R * 0.6, DRAGON_R * 1.6, -DRAGON_R * 1.2);
       h.rotation.set(-0.9, 0, side * 0.35);
-      const whisker = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.35, DRAGON_R * 5, 6), glow);
+      const whisker = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.6, DRAGON_R * 5, 6), glow);
       whisker.position.set(side * DRAGON_R * 1.6, -DRAGON_R * 0.6, DRAGON_R * 2);
       whisker.rotation.set(0.5, 0, side * 1.1);
       const eye = new THREE.Mesh(new THREE.SphereGeometry(DRAGON_R * 0.18, 8, 6), glow);
@@ -1304,22 +1319,22 @@ export class PortalMode {
         const tt = t - i * DRAGON_LAG;
         const p = this.dragonPath(tt);
         // Ondulation qui court le long du corps.
-        p.y += Math.sin(i * 0.22 - t * 2.2) * 3.5;
-        p.x += Math.sin(i * 0.15 - t * 1.6) * 2.5;
+        p.y += Math.sin(i * 0.2 - t * 2.0) * 7;
+        p.x += Math.sin(i * 0.13 - t * 1.5) * 5;
         const k = i / DRAGON_RINGS;
         const r = DRAGON_R * (k < 0.08 ? 0.85 + k * 2 : 1 - 0.85 * ((k - 0.08) / 0.92) ** 1.4);
         m.compose(p, q, new THREE.Vector3(r, r, r));
         rings.setMatrixAt(i, m);
         // Crinière : flammèches au-dessus du dos, plus fournies vers la tête.
         for (let j = 0; j < 3; j++) {
-          const lift = r * (1 + 0.45 * j) + Math.sin(t * 6 + i + j * 2) * 0.6;
+          const lift = r * (1 + 0.45 * j) + Math.sin(t * 6 + i + j * 2) * 1.2;
           mp.setXYZ(i * 3 + j, p.x + Math.sin(i * 1.7 + j) * r * 0.4, p.y + lift, p.z + Math.cos(i * 1.3 + j) * r * 0.4);
         }
       }
       rings.instanceMatrix.needsUpdate = true;
       mp.needsUpdate = true;
       const hp = this.dragonPath(t + DRAGON_LAG * 1.5);
-      hp.y += Math.sin(-t * 2.2 - 0.3) * 3.5;
+      hp.y += Math.sin(-t * 2.0 - 0.3) * 7;
       head.position.copy(hp);
       head.up.copy(up);
       head.lookAt(this.dragonPath(t + DRAGON_LAG * 4));
@@ -1359,7 +1374,7 @@ export class PortalMode {
             vec3 p = position;
             float s = fract(sin(dot(position.xz, vec2(12.9898, 78.233))) * 43758.5453);
             p.y += sin(uTime * (0.2 + 0.2 * s) + s * 6.28) * 0.3;
-            p.x += sin(uTime * 0.3 + s * 6.28) * 0.4;
+            p.x = mod(p.x + uTime * 0.35 + 4.5, 9.0) - 4.5 + sin(uTime * 0.3 + s * 6.28) * 0.4;
             p.z += cos(uTime * 0.27 + s * 4.0) * 0.25;
             vA = 0.3 + 0.7 * pow(0.5 + 0.5 * sin(uTime * (0.8 + 1.5 * s) + s * 10.0), 2.0);
             vec4 view = modelViewMatrix * vec4(p, 1.0);
