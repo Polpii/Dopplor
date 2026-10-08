@@ -101,12 +101,12 @@ def _delegate(name: str) -> mpt.BaseOptions.Delegate:
     return mpt.BaseOptions.Delegate.GPU if name == "GPU" else mpt.BaseOptions.Delegate.CPU
 
 
-def create_landmarker(kind: str, model: Path, delegate: str, count: int, image_mode: bool = False):
+def create_landmarker(kind: str, model: Path, delegate: str, count: int, image_mode: bool = False, segmentation: bool = False):
     base = mpt.BaseOptions(model_asset_path=str(model), delegate=_delegate(delegate))
     video = mpv.RunningMode.IMAGE if image_mode else mpv.RunningMode.VIDEO
     if kind == "pose":
         return mpv.PoseLandmarker.create_from_options(
-            mpv.PoseLandmarkerOptions(base_options=base, running_mode=video, num_poses=count)
+            mpv.PoseLandmarkerOptions(base_options=base, running_mode=video, num_poses=count, output_segmentation_masks=segmentation)
         )
     if kind == "hands":
         return mpv.HandLandmarker.create_from_options(
@@ -161,6 +161,9 @@ class Task:
         self.zone: dict[str, object] = {}
         self.load(model, prefer_gpu, count)
         self.crop = np.zeros((CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8)
+        #: Corps : sortir aussi la silhouette (mode fée), et la dernière (image tournée, demi-définition).
+        self.segment = False
+        self.mask: np.ndarray | None = None
 
     def load(self, model: Path, prefer_gpu: bool, count: int) -> None:
         self.close()
@@ -171,6 +174,10 @@ class Task:
                 # Corps : un second détecteur, sans suivi, pour regarder de temps en temps qui est
                 # au centre de l'image (voir Pipeline._recenter).
                 self.probe = create_landmarker(self.kind, model, delegate, 1, image_mode=True) if self.kind == "pose" else None
+                # Corps avec silhouette (masque de segmentation) : seulement quand le mode fée la
+                # demande (un peu plus de calcul), créé d'avance pour ne pas figer l'image au moment
+                # où l'on entre dans le mode.
+                self.seg = create_landmarker(self.kind, model, delegate, count, segmentation=True) if self.kind == "pose" else None
                 self.delegate = delegate
                 break
             except Exception as e:  # noqa: BLE001 - repli CPU si le GPU n'est pas utilisable
@@ -181,7 +188,7 @@ class Task:
         # Préchauffage : la première inférence initialise le GPU (plusieurs centaines de ms).
         blank = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((CROP_SIZE, CROP_SIZE, 3), np.uint8))
         self._last_ts = 0
-        for lm in [self.full, *self.zone.values()]:
+        for lm in [self.full, *self.zone.values(), *([self.seg] if self.seg is not None else [])]:
             for _ in range(2):
                 lm.detect_for_video(blank, self._next_ts(None))
         if self.probe is not None:
@@ -190,12 +197,13 @@ class Task:
         log.info("%s prêt (%s)", self.kind, self.delegate)
 
     def close(self) -> None:
-        for lm in [self.full, *self.zone.values(), getattr(self, "probe", None)]:
+        for lm in [self.full, *self.zone.values(), getattr(self, "probe", None), getattr(self, "seg", None)]:
             if lm is not None:
                 lm.close()
         self.full = None
         self.zone = {}
         self.probe = None
+        self.seg = None
 
     def _next_ts(self, frame_ts: int | None) -> int:
         # MediaPipe exige des timestamps strictement croissants pour chaque détecteur.
@@ -215,6 +223,18 @@ class Task:
                 rgb = np.zeros_like(frame.rgb)
                 rgb[:, x0:x1] = frame.rgb[:, x0:x1]
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            if self.segment and self.seg is not None:
+                result = self.seg.detect_for_video(image, ts)
+                masks = result.segmentation_masks
+                # Demi-définition (assez fin : ~3 mm sur la personne à 2 m), copiée : la vue numpy
+                # ne vit pas plus longtemps que le résultat.
+                if masks:
+                    view = masks[0].numpy_view()
+                    self.mask = (view[..., 0] if view.ndim == 3 else view)[::2, ::2].copy()
+                else:
+                    self.mask = None
+                return self._unpack(result)
+            self.mask = None
             return self._unpack(self.full.detect_for_video(image, ts))
         h, w = frame.rgb.shape[:2]
         out: list[Detection] = []
@@ -586,9 +606,14 @@ class Pipeline:
                 self._depth = None
         return self._depth
 
-    def _send_occlusion(self, depth: np.ndarray, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int]) -> None:
+    def set_occlusion(self, on: bool) -> None:
+        """Mode fée : silhouette du reflet calculée et envoyée (et masque du corps demandé au modèle)."""
+        self.occlusion = on
+        self.tasks["pose"].segment = on
+
+    def _send_occlusion(self, depth: np.ndarray, mask: np.ndarray | None, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int]) -> None:
         try:
-            occ = occlusion_map(self.mirror, depth, pts, xyz, size)
+            occ = occlusion_map(self.mirror, depth, mask, pts, xyz, size)
             if occ is not None and self.on_occlusion:
                 self.on_occlusion(*occ)
         except Exception:  # noqa: BLE001 - une silhouette ratée ne doit rien arrêter
@@ -652,7 +677,7 @@ class Pipeline:
         if kind == "pose" and self.occlusion and self.on_occlusion and depth is not None and lifted[0] is not None and not self._occ_busy:
             h_img, w_img = frame.rgb.shape[:2]
             self._occ_busy = True
-            self._occ_pool.submit(self._send_occlusion, depth, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img))
+            self._occ_pool.submit(self._send_occlusion, depth, self.tasks["pose"].mask, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img))
         out = []
         for d, l in zip(dets, lifted):
             uv = m.project(l.xyz) if l is not None else None

@@ -211,14 +211,14 @@ def main() -> None:
                 elif cmd.get("cmd") == "trace":
                     pipeline.start_trace(float(cmd.get("seconds", 10)), Path.home() / ".cache" / "dopplor" / "trace.pkl", bool(cmd.get("head", False)))
                 elif cmd.get("cmd") == "occlusion":
-                    pipeline.occlusion = bool(cmd.get("on"))
+                    pipeline.set_occlusion(bool(cmd.get("on")))
                 elif cmd.get("cmd") == "preview":
                     (hub.preview_clients.add if cmd.get("on") else hub.preview_clients.discard)(ws)
         finally:
             hub.clients.discard(ws)
             hub.preview_clients.discard(ws)
             if not hub.clients:
-                pipeline.occlusion = False
+                pipeline.set_occlusion(False)
             log.info("navigateur déconnecté (%d)", len(hub.clients))
         return ws
 

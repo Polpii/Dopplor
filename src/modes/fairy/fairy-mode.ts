@@ -12,14 +12,24 @@ import { MirrorWorld, reflected } from "./world";
 
 /** Main levée (poignet au-dessus de l'épaule) tenue ce temps : la fée vient s'y poser. */
 const HAND_UP_MS = 350;
-/** Tour autour du corps (rad/s), rayon (m). */
-const ORBIT_SPEED = 0.95;
-const ORBIT_RADIUS = 0.42;
 /** Ressort qui la tire vers sa cible : raideur, amortissement (un peu sous l'amorti : elle vole). */
 const STIFFNESS = 10;
 const DAMPING = 0.75;
 
 type Mood = "wander" | "orbit" | "hand";
+type Path = "ellipse" | "saddle" | "spiral" | "visit";
+const PATHS: Path[] = ["ellipse", "saddle", "spiral", "visit"];
+/** Vitesse de chaque figure (rad/s). */
+const PATH_SPEED: Record<Path, number> = { ellipse: 1.0, saddle: 0.85, spiral: 1.2, visit: 0.7 };
+/** Passage d'une figure à l'autre (ms). */
+const PATH_BLEND_MS = 1800;
+/**
+ * Taille selon la profondeur : plus grande devant la personne (plus près), plus petite derrière,
+ * en plus de la perspective (trop faible seule pour qu'on sente qu'elle s'éloigne).
+ */
+const DEPTH_SCALE = 1.5;
+const SCALE_MIN = 0.5;
+const SCALE_MAX = 1.8;
 
 export class FairyMode {
   readonly id = "fairy";
@@ -111,7 +121,9 @@ export class FairyMode {
     this.pos.addScaledVector(this.vel, dt);
     // Vol stationnaire : un léger tremblé vertical.
     const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17), 0));
-    this.fairy.update(shown, this.vel, t, dt);
+    const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
+    const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX);
+    this.fairy.update(shown, this.vel, t, dt, scale);
     this.world.render();
   }
 
@@ -162,17 +174,64 @@ export class FairyMode {
       this.mood = "orbit";
       this.setHint("Lève la main : elle viendra s'y poser");
     }
-    // Autour du corps : un tour en ~6 s, rayon et hauteur qui varient (de la taille au-dessus
-    // de la tête). Derrière (z plus loin que la poitrine) : cachée par le reflet.
-    this.angle += dt * ORBIT_SPEED * (1 + 0.25 * Math.sin(t * 0.31));
-    const r = ORBIT_RADIUS * (1 + 0.2 * Math.sin(t * 0.37));
-    const k = 0.5 + 0.5 * Math.sin(t * 0.23 + 1.3);
-    const y = hips.y + (head.y + 0.12 - hips.y) * k;
-    const c = this.chest;
-    return new THREE.Vector3(c.x + r * Math.cos(this.angle), y, c.z + r * Math.sin(this.angle));
+    // Autour du corps, suivant une figure qui change toutes les 7 à 11 s (en fondu) ; derrière
+    // (plus loin que la poitrine) : cachée par le reflet.
+    if (now - this.pathSince > this.pathFor) {
+      this.prevPath = this.path;
+      const others = PATHS.filter((p) => p !== this.path);
+      this.path = others[Math.floor(Math.random() * others.length)];
+      this.pathSince = now;
+      this.pathFor = 7000 + Math.random() * 4000;
+      if (Math.random() < 0.4) this.dir = -this.dir;
+    }
+    this.angle += dt * this.dir * PATH_SPEED[this.path] * (1 + 0.2 * Math.sin(t * 0.31));
+    const body = { c: this.chest, head, hips };
+    const next = this.pathPoint(this.path, body, t, (now - this.pathSince) / 1000);
+    const k = Math.min(1, (now - this.pathSince) / PATH_BLEND_MS);
+    if (k >= 1 || !this.prevPath) return next;
+    const prev = this.pathPoint(this.prevPath, body, t, Infinity);
+    return prev.lerp(next, k * k * (3 - 2 * k));
+  }
+
+  /**
+   * Un point de la figure en cours (repère Three, derrière la vitre : z négatif ; plus loin que
+   * la poitrine = derrière la personne). `since` : secondes depuis le début de la figure.
+   */
+  private pathPoint(path: Path, b: { c: THREE.Vector3; head: THREE.Vector3; hips: THREE.Vector3 }, t: number, since: number): THREE.Vector3 {
+    const a = this.angle;
+    const { c, head, hips } = b;
+    const mid = (hips.y + head.y) / 2;
+    const top = head.y + 0.2;
+    switch (path) {
+      case "ellipse": {
+        // Ellipse profonde et inclinée : monte d'un côté, descend de l'autre.
+        const rx = 0.48 + 0.06 * Math.sin(t * 0.3);
+        const rz = 0.72;
+        return new THREE.Vector3(c.x + rx * Math.cos(a), mid + 0.24 * Math.sin(a + 0.9), c.z + rz * Math.sin(a));
+      }
+      case "saddle": {
+        // Boucle en selle : deux bosses par tour, haut devant et derrière, bas sur les côtés.
+        return new THREE.Vector3(c.x + 0.52 * Math.sin(a), mid + 0.1 - 0.3 * Math.cos(2 * a), c.z + 0.62 * Math.cos(a));
+      }
+      case "spiral": {
+        // Spirale : monte de la taille au-dessus de la tête, puis redescend (en 9 s).
+        const u = 0.5 - 0.5 * Math.cos((Math.min(since, 1e6) / 9) * Math.PI * 2);
+        return new THREE.Vector3(c.x + 0.42 * Math.cos(a), hips.y - 0.05 + (top - hips.y + 0.05) * u, c.z + 0.6 * Math.sin(a));
+      }
+      case "visit": {
+        // Visite : passe tout près devant le visage, puis repart large derrière.
+        const front = Math.max(0, Math.cos(a));
+        return new THREE.Vector3(c.x + 0.55 * Math.sin(a) * (1 - 0.6 * front), head.y - 0.05 - 0.25 * (1 - front), c.z + 0.28 * front - 0.6 * (1 - front) * Math.abs(Math.sin(a * 0.5)));
+      }
+    }
   }
 
   private landed = false;
+  private path: Path = "ellipse";
+  private prevPath: Path | null = null;
+  private pathSince = 0;
+  private pathFor = 9000;
+  private dir = 1;
 
   private setHint(text: string): void {
     if (this.hint.textContent !== text) this.hint.textContent = text;

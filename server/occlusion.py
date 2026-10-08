@@ -1,91 +1,144 @@
 """Le corps tel qu'on le voit dans le reflet : une carte de profondeur, pour cacher ce qui passe
 derrière lui (mode fée : elle disparaît quand elle passe derrière la personne).
 
-Chaque pixel du capteur de profondeur qui appartient à la personne est passé en 3D, puis projeté
-sur l'écran exactement comme les points du squelette (là où l'œil voit son reflet). On garde,
-pour chaque case d'une grille posée sur l'écran, la distance du reflet derrière la vitre (celle
-de la personne devant). Un objet 3D placé derrière la vitre est caché là où il est plus loin que
-le reflet de la personne.
+Une grille posée sur l'écran : pour chaque case, la distance du reflet du corps derrière la vitre
+(celle de la personne devant), ou rien. Un objet 3D placé derrière la vitre est caché là où il
+est plus loin que le reflet.
+
+On part de chaque case de l'écran (pas des pixels de la caméra : pas de trous) : le regard de
+l'œil à travers cette case, prolongé jusqu'au reflet, donne un point de la personne, qu'on
+retrouve dans l'image de la caméra. Sa distance n'est pas connue d'avance : on part de celle du
+torse, on lit la profondeur à l'endroit trouvé, et on recommence (deux fois suffisent : un bras
+tendu devant le corps se retrouve à sa vraie place). Le contour vient du masque du corps que
+calcule le modèle sur l'image couleur (fin : ~3 mm sur la personne) ; le capteur de profondeur,
+plus grossier (~2 cm), ne donne que la distance.
 """
 from __future__ import annotations
 
 import cv2
 import numpy as np
 
-#: Grille sur l'écran (même rapport que l'écran en portrait : ~0,6 cm par case).
-GRID_W, GRID_H = 108, 192
-#: Pas de lecture du capteur (px) : un point par ~1 cm sur la personne à 2 m.
-STEP = 3
+#: Grille sur l'écran (même rapport que l'écran en portrait) : ~3 mm par case.
+GRID_W, GRID_H = 216, 384
 #: Distance codée par pas de 2 cm (0–5 m) ; 255 = pas de corps.
 SCALE = 0.02
 EMPTY = 255
-#: Ce qui est à plus de ça devant ou derrière le torse n'est pas la personne.
+#: Ce qui est à plus de ça devant ou derrière le torse n'est pas la personne (lecture de profondeur).
 DEPTH_RANGE = 0.8
-#: Au-dessus du sol (m) : en dessous, c'est le sol sous les pieds.
+#: Seuil du masque du corps (probabilité).
+MASK_THRESHOLD = 0.5
+#: Marge autour du squelette projeté (part de l'écran) : cheveux, mains, vêtements amples.
+MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 0.12, 0.08, 0.05
+#: Sans masque : au-dessus du sol (m), sinon c'est le sol sous les pieds.
 FLOOR_MARGIN = 0.03
-_KERNEL = np.ones((3, 3), np.uint8)
 
 
-def occlusion_map(mirror, depth: np.ndarray, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int]) -> tuple[dict, bytes] | None:
+def _from_sensor(source):
+    """Inverse de source.to_sensor (une rotation d'image : application affine)."""
+    o = np.array(source.to_sensor(np.array([0.0]), np.array([0.0]))).ravel()
+    ex = np.array(source.to_sensor(np.array([1.0]), np.array([0.0]))).ravel() - o
+    ey = np.array(source.to_sensor(np.array([0.0]), np.array([1.0]))).ravel() - o
+    inv = np.linalg.inv(np.stack([ex, ey], axis=1))
+
+    def f(us: np.ndarray, vs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        a, b = us - o[0], vs - o[1]
+        return inv[0, 0] * a + inv[0, 1] * b, inv[1, 0] * a + inv[1, 1] * b
+
+    return f
+
+
+def _project(X: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
+    """Repère caméra → pixels, avec la distorsion de l'objectif (modèle d'OpenCV, jusqu'à 8
+    coefficients). Comme cv2.projectPoints, mais ~20 fois plus rapide sur des dizaines de
+    milliers de points."""
+    z = np.where(X[:, 2] > 1e-6, X[:, 2], 1e-6)
+    x, y = X[:, 0] / z, X[:, 1] / z
+    k = np.zeros(8)
+    dist = np.ravel(dist)[:8]
+    k[: len(dist)] = dist
+    k1, k2, p1, p2, k3, k4, k5, k6 = k
+    r2 = x * x + y * y
+    radial = (1 + r2 * (k1 + r2 * (k2 + r2 * k3))) / (1 + r2 * (k4 + r2 * (k5 + r2 * k6)))
+    xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+    yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+    return np.stack([K[0, 0] * xd + K[0, 2], K[1, 1] * yd + K[1, 2]], axis=1).astype(np.float32)
+
+
+def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int]) -> tuple[dict, bytes] | None:
     """Carte de profondeur du reflet de la personne (GRID_H × GRID_W octets) et ce dont la page
     a besoin pour placer sa 3D au même endroit : œil, taille de l'écran, quelques points du corps
-    (repère du miroir, en mètres)."""
+    (repère du miroir, en mètres). `mask` : masque du corps (image tournée, demi-définition)."""
     source = mirror.source
     model = source.model
-    eye = mirror.state.eye
+    E = mirror.state.eye
     pose = mirror._pose()
-    if model is None or eye is None or pose is None:
+    if model is None or E is None or pose is None:
         return None
     R, t = pose
     c = mirror.calibration
     sw, sh, gap = c.screen_width / 100.0, c.screen_height / 100.0, c.glass_gap / 100.0
-    w_img, h_img = image_size
 
-    # Zone de la personne dans le capteur : ses articulations, avec une marge (cheveux, mains).
-    vis = pose_pts[:, 3] > 0.3
-    if vis.sum() < 4:
+    seen = pose_pts[:, 3] > 0.3
+    if seen.sum() < 4:
         return None
-    u, v = source.to_sensor(pose_pts[vis, 0] * w_img, pose_pts[vis, 1] * h_img)
-    torso_z = float(np.median(pose_xyz[[11, 12, 23, 24], 2]))
-    if not np.isfinite(torso_z) or torso_z <= 0.2:
+    torso_cam = pose_xyz[[11, 12, 23, 24]].mean(axis=0)
+    if not np.all(np.isfinite(torso_cam)) or torso_cam[2] <= 0.2:
         return None
-    H, W = depth.shape
-    margin = 0.25 * model.K[0, 0] / torso_z
-    u0, u1 = int(max(0, u.min() - margin)), int(min(W, u.max() + margin))
-    v0, v1 = int(max(0, v.min() - margin)), int(min(H, v.max() + margin))
-    if u1 - u0 < STEP * 2 or v1 - v0 < STEP * 2:
+    torso_z = float(torso_cam[2])
+    d_torso = float(-(torso_cam @ R.T + t)[2])  # distance du reflet du torse derrière la vitre
+
+    # Cases autour du squelette projeté.
+    uv = mirror.project(pose_xyz[seen])
+    if uv is None:
         return None
-    ys = np.arange(v0, v1, STEP)
-    xs = np.arange(u0, u1, STEP)
-    d = depth[np.ix_(ys, xs)]
-    keep = (d > 0) & (np.abs(d - torso_z) < DEPTH_RANGE)
-    uu, vv = np.meshgrid(xs, ys)
-    z = d[keep].astype(np.float64)
-    grid = np.full(GRID_H * GRID_W, EMPTY, np.uint8)
-    if z.size:
-        pts = np.stack([uu[keep], vv[keep]], axis=1).reshape(-1, 1, 2).astype(np.float64)
-        rays = cv2.undistortPoints(pts, model.K, model.dist).reshape(-1, 2)
-        xyz = np.stack([rays[:, 0] * z, rays[:, 1] * z, z], axis=1)
-        floor_n = getattr(source, "floor_normal", None)
-        floor_h = getattr(source, "floor_height", None)
-        if floor_n is not None and floor_h is not None:
-            xyz = xyz[xyz @ floor_n + floor_h > FLOOR_MARGIN]
-        P = xyz @ R.T + t
-        # Comme Mirror.project : le reflet est symétrique par rapport à la vitre.
-        reflected = P * np.array([1.0, 1.0, -1.0])
-        denom = reflected[:, 2] - eye[2]
-        denom = np.where(np.abs(denom) < 1e-6, 1e-6, denom)
-        s = (gap - eye[2]) / denom
-        S = eye + s[:, None] * (reflected - eye)
-        gx = np.floor(S[:, 0] / sw * GRID_W).astype(np.int64)
-        gy = np.floor(S[:, 1] / sh * GRID_H).astype(np.int64)
-        behind = -P[:, 2]  # distance du reflet derrière la vitre = celle de la personne devant
-        ok = (gx >= 0) & (gx < GRID_W) & (gy >= 0) & (gy < GRID_H) & (behind > 0)
-        code = np.clip(np.round(behind[ok] / SCALE), 1, EMPTY - 1).astype(np.uint8)
-        np.minimum.at(grid, gy[ok] * GRID_W + gx[ok], code)
-    grid = grid.reshape(GRID_H, GRID_W)
-    # Bouche les petits trous (pixels sans mesure) sans grossir la silhouette.
-    grid = cv2.dilate(cv2.erode(grid, _KERNEL), _KERNEL)
+    i0 = int(np.clip((uv[:, 0].min() - MARGIN_X) * GRID_W, 0, GRID_W))
+    i1 = int(np.clip(np.ceil((uv[:, 0].max() + MARGIN_X) * GRID_W), 0, GRID_W))
+    j0 = int(np.clip((uv[:, 1].min() - MARGIN_TOP) * GRID_H, 0, GRID_H))
+    j1 = int(np.clip(np.ceil((uv[:, 1].max() + MARGIN_BOTTOM) * GRID_H), 0, GRID_H))
+    # Zone de taille paire : la profondeur se cherche sur des blocs de 2 × 2 cases (elle est de
+    # toute façon grossière), seul le contour (masque) se lit case par case.
+    i1 = min(GRID_W, i0 + 2 * ((i1 - i0 + 1) // 2))
+    j1 = min(GRID_H, j0 + 2 * ((j1 - j0 + 1) // 2))
+    i0, j0 = i1 - 2 * ((i1 - i0) // 2), j1 - 2 * ((j1 - j0) // 2)
+    grid = np.full((GRID_H, GRID_W), EMPTY, np.uint8)
+    if i1 - i0 >= 4 and j1 - j0 >= 4:
+        SX, SY = np.meshgrid((np.arange(i0, i1, 2) + 1.0) / GRID_W * sw, (np.arange(j0, j1, 2) + 1.0) / GRID_H * sh)
+        coarse = SX.shape  # cv2.remap : moins de 32 767 lignes, on garde la forme de la grille
+        fine = (j1 - j0, i1 - i0)
+        SX, SY = SX.ravel(), SY.ravel()
+
+        def to_camera(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            """Regard de l'œil à travers chaque bloc, jusqu'au reflet à `d` derrière la vitre →
+            point réel (devant la vitre) → repère caméra et pixel du capteur."""
+            s = (d - E[2]) / (gap - E[2])
+            P = np.stack([E[0] + s * (SX - E[0]), E[1] + s * (SY - E[1]), -d], axis=1)
+            X = (P - t) @ R
+            return X, _project(X, model.K, model.dist)
+
+        d = np.full(SX.shape, d_torso)
+        ok = np.zeros(SX.shape, bool)
+        for _ in range(2):
+            X, pix = to_camera(d)
+            z = cv2.remap(depth, pix[:, 0].reshape(coarse), pix[:, 1].reshape(coarse), cv2.INTER_NEAREST, borderValue=0).ravel()
+            ok = (z > 0) & (np.abs(z - torso_z) < DEPTH_RANGE) & (X[:, 2] > 0.1)
+            measured = (X / X[:, 2:3] * z[:, None]) @ R.T + t  # le point mesuré sur ce même rayon
+            d = np.where(ok, -measured[:, 2], d)
+        X, pix = to_camera(d)
+        up = lambda a: cv2.resize(a.reshape(coarse).astype(np.float32), fine[::-1], interpolation=cv2.INTER_LINEAR)  # noqa: E731
+        d_fine = up(d)
+        if mask is not None:
+            ur, vr = _from_sensor(source)(up(pix[:, 0]), up(pix[:, 1]))
+            m = cv2.remap(mask, (ur / 2).astype(np.float32), (vr / 2).astype(np.float32), cv2.INTER_LINEAR, borderValue=0)
+            person = m > MASK_THRESHOLD
+        else:
+            person = ok
+            floor_n = getattr(source, "floor_normal", None)
+            floor_h = getattr(source, "floor_height", None)
+            if floor_n is not None and floor_h is not None:
+                person &= X @ floor_n + floor_h > FLOOR_MARGIN
+            person = cv2.resize(person.reshape(coarse).astype(np.uint8), fine[::-1], interpolation=cv2.INTER_NEAREST) > 0
+        code = np.clip(np.round(d_fine / SCALE), 1, EMPTY - 1).astype(np.uint8)
+        grid[j0:j1, i0:i1] = np.where(person, code, EMPTY)
 
     to_m = lambda i: (pose_xyz[i] @ R.T + t)  # noqa: E731
     mid = lambda a, b: ((to_m(a) + to_m(b)) / 2)  # noqa: E731
@@ -95,7 +148,7 @@ def occlusion_map(mirror, depth: np.ndarray, pose_pts: np.ndarray, pose_xyz: np.
         "w": GRID_W,
         "h": GRID_H,
         "scale": SCALE,
-        "eye": r3(eye),
+        "eye": r3(E),
         "screen": [round(sw, 4), round(sh, 4), round(gap, 4)],
         "body": {
             "chest": r3(mid(11, 12)),

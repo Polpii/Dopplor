@@ -75,9 +75,10 @@ export class Fairy {
     for (let i = 0; i < 40; i++) this.spawn(this.group.position, 1.6);
   }
 
-  /** Place la fée et anime ailes, lueur et étincelles. `speed` : sa vitesse (m/s). */
-  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number): void {
+  /** Place la fée et anime ailes, lueur et étincelles. `scale` : taille (profondeur). */
+  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number, scale = 1): void {
     this.group.position.copy(position);
+    this.group.scale.setScalar(scale);
     // Penche dans le sens où elle vole, comme un insecte.
     this.body.rotation.z = THREE.MathUtils.clamp(-velocity.x * 0.6, -0.5, 0.5);
     const flap = Math.sin(t * Math.PI * 2 * FLAP_HZ);
