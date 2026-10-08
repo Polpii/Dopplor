@@ -70,28 +70,59 @@ def result_message(r: Result) -> bytes:
 
 
 class Hub:
-    """Clients WebSocket connectés + diffusion depuis les threads de capture et d'inférence."""
+    """Clients WebSocket connectés + diffusion depuis les threads de capture et d'inférence.
+
+    Chaque client a sa propre file d'envoi : un client lent (onglet en arrière-plan, réseau)
+    ne retarde plus les autres (avant, chaque message attendait que tous les clients précédents
+    l'aient pris : jusqu'à une seconde de retard pour la page du miroir). S'il prend du retard,
+    ses plus vieux messages sont jetés : une pose périmée ne sert à rien."""
+
+    QUEUE = 8
 
     def __init__(self) -> None:
         self.clients: set[web.WebSocketResponse] = set()
         self.preview_clients: set[web.WebSocketResponse] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
+        self._queues: dict[web.WebSocketResponse, asyncio.Queue] = {}
+
+    def attach(self, ws: web.WebSocketResponse) -> asyncio.Task:
+        """File et tâche d'envoi d'un client (à annuler à sa déconnexion)."""
+        q: asyncio.Queue = asyncio.Queue(self.QUEUE)
+        self._queues[ws] = q
+
+        async def pump() -> None:
+            while True:
+                data = await q.get()
+                if ws.closed:
+                    continue
+                try:
+                    await (ws.send_bytes(data) if isinstance(data, bytes) else ws.send_str(data))
+                except ConnectionError:
+                    pass
+
+        return asyncio.ensure_future(pump())
+
+    def detach(self, ws: web.WebSocketResponse) -> None:
+        self._queues.pop(ws, None)
 
     def broadcast(self, data: bytes | str, preview_only: bool = False) -> None:
         if self.loop is None:
             return
         targets = list(self.preview_clients if preview_only else self.clients)
         if targets:
-            asyncio.run_coroutine_threadsafe(self._send(targets, data), self.loop)
+            self.loop.call_soon_threadsafe(self._enqueue, targets, data)
 
-    async def _send(self, targets, data) -> None:
+    def _enqueue(self, targets, data) -> None:
         for ws in targets:
-            if ws.closed:
+            q = self._queues.get(ws)
+            if q is None or ws.closed:
                 continue
-            try:
-                await (ws.send_bytes(data) if isinstance(data, bytes) else ws.send_str(data))
-            except ConnectionError:
-                pass
+            if q.full():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            q.put_nowait(data)
 
 
 def preview_loop(source: Source, hub: Hub, width: int = 640, fps: float = 15) -> None:
@@ -195,8 +226,9 @@ def main() -> None:
     async def websocket(request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(compress=False, max_msg_size=0)
         await ws.prepare(request)
-        hub.clients.add(ws)
         await ws.send_str(hello())
+        pump = hub.attach(ws)
+        hub.clients.add(ws)
         log.info("navigateur connecté (%d)", len(hub.clients))
         try:
             async for msg in ws:
@@ -219,6 +251,8 @@ def main() -> None:
         finally:
             hub.clients.discard(ws)
             hub.preview_clients.discard(ws)
+            hub.detach(ws)
+            pump.cancel()
             if not hub.clients:
                 pipeline.set_occlusion(0)
             log.info("navigateur déconnecté (%d)", len(hub.clients))

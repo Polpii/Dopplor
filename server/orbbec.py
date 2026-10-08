@@ -196,7 +196,9 @@ class OrbbecCamera(Source):
             return
         log.info("caméra : temps de pose %d (de %d à %d), gain %d (de %d à %d)", exp0, er.min, er.max, gain0, gr.min, gr.max)
         # Unités du temps de pose : 100 µs sur ce modèle (UVC). Une image à `fps` = 10000/fps.
-        cap = max(er.min, min(er.max, int(10000 / fps * 0.9)))
+        # Au plus ~60 % d'une image : au-delà, ce modèle n'a plus le temps de lire l'image et
+        # ralentit (mesuré : 30 ms de pose → ~19 images/s au lieu de 30).
+        cap = max(er.min, min(er.max, int(10000 / fps * 0.6)))
         try:
             dev.set_bool_property(P.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, False)
             exp = max(er.min, min(cap, exp0))
