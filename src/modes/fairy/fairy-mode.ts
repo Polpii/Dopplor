@@ -48,7 +48,7 @@ const FLAT_REACH = 1.45;
 const FLAT_UP = 0.3;
 const FLAT_MS = 300;
 /** La main n'est plus tendue (fermée, retournée, baissée, perdue) depuis ce temps : elle s'envole. */
-const LEAVE_MS = 600;
+const LEAVE_MS = 900;
 /** Paume encore assez vers le ciel pour la garder (au-dessous : retournée). */
 const HOLD_UP = -0.15;
 /** Main qui bouge plus vite que ça (m/s) : elle s'envole d'un coup. */
@@ -69,8 +69,13 @@ const TAKEOFF_MS = 900;
 const FALL_MS = 520;
 const FALL_GRAVITY = 3.2;
 const RECOVER_MS = 900;
-/** Main qui descend plus vite que ça (m/s) : elle n'est plus portée, elle tombe. */
-const DROP_SPEED = 0.45;
+/**
+ * Main retirée : elle descend vite (m/s) ET se retrouve nettement plus bas que d'habitude (m).
+ * La position de la paume tremble (mains petites à 2 m) : la vitesse seule faisait tomber la
+ * fée sur une simple secousse de la mesure.
+ */
+const DROP_SPEED = 0.6;
+const DROP_DEPTH = 0.12;
 /** Posée (ou en train d'arriver) : sa lumière n'est pas cachée par la main qui la porte (m). */
 const PERCH_BIAS = 0.25;
 
@@ -86,8 +91,9 @@ interface HandInfo {
   palm: THREE.Vector3 | null;
   palmAt: number;
   speed: number;
-  /** Vitesse verticale de la paume (m/s, > 0 vers le haut). */
+  /** Vitesse verticale de la paume (m/s, > 0 vers le haut), et sa hauteur habituelle. */
   vy: number;
+  restY: number;
   /** Poing (elle s'envole d'un bond plutôt que de tomber). */
   closed: boolean;
 }
@@ -125,8 +131,8 @@ export class FairyMode {
   /** Quand elle a quitté une main pour la dernière fois. */
   private leftHandAt = -Infinity;
   private hands: Record<Side, HandInfo> = {
-    left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, closed: false },
-    right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, closed: false },
+    left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, restY: 0, closed: false },
+    right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, restY: 0, closed: false },
   };
 
   constructor(
@@ -262,8 +268,12 @@ export class FairyMode {
         if (info.palm && occ.at !== info.palmAt) {
           const dt = Math.max(0.01, (occ.at - info.palmAt) / 1000);
           info.speed += (palm.distanceTo(info.palm) / dt - info.speed) * 0.5;
-          info.vy += ((palm.y - info.palm.y) / dt - info.vy) * 0.5;
+          info.vy += ((palm.y - info.palm.y) / dt - info.vy) * 0.3;
+          // Hauteur habituelle de la main : suit lentement (une main qu'on baisse doucement
+          // emporte la fée avec elle).
+          info.restY += (palm.y - info.restY) * (1 - Math.exp(-dt / 0.6));
         }
+        if (!info.palm) info.restY = palm.y;
         if (occ.at !== info.palmAt) info.palm = palm;
         info.palmAt = occ.at;
       } else {
@@ -320,7 +330,7 @@ export class FairyMode {
         // Main retirée sous elle (descend vite, perdue) : elle tombe. Geste brusque vers le haut
         // ou de côté : elle s'envole d'un coup. Main fermée : elle s'envole d'un bond. Main
         // retournée ou baissée doucement : elle tombe aussi.
-        if (!spot || info.vy < -DROP_SPEED) return this.fall(now);
+        if (!spot || (info.vy < -DROP_SPEED && info.palm!.y < info.restY - DROP_DEPTH)) return this.fall(now);
         if (info.speed > STARTLE_SPEED) return this.takeoff(now, true);
         if (info.notFlatSince && now - info.notFlatSince > LEAVE_MS) return info.closed ? this.takeoff(now, false) : this.fall(now);
         // L'autre main à plat tout près : elle saute dessus.
