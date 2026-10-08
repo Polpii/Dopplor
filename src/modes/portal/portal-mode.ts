@@ -36,20 +36,26 @@ const LOST_MS = 1500;
 /** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
  *  le délai caméra → calcul → image. */
 const EYE_STALE_MS = 700;
+/** Réglages du suivi, ajustables par l'adresse (?EYE_ALPHA=0.6…) pour les essais sur une session
+ *  rejouée. */
+const tune = (name: string, fallback: number) => {
+  const v = Number(new URLSearchParams(location.search).get(name));
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+};
 /** Filtre de l'œil (alpha-bêta) : part de l'écart corrigée à chaque mesure, sur la position et la
  *  vitesse. Délai écran (rendu + affichage, s) ajouté à l'âge de la mesure pour viser l'instant où
  *  l'image sera vue ; anticipation plafonnée. */
-const EYE_ALPHA = 0.5;
-const EYE_BETA = 0.12;
-const DISPLAY_S = 0.025;
+const EYE_ALPHA = tune("EYE_ALPHA", 0.5);
+const EYE_BETA = tune("EYE_BETA", 0.12);
+const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : elle sature en douceur vers cette durée (s) quand les mesures tardent (pas
  *  d'arrêt net puis de saut). Corrections de l'estimation étalées sur ~ce temps (s) au lieu
  *  d'un saut d'image. Écart (m) au-delà duquel une mesure est suspecte (un raté de squelette) :
  *  elle compte peu, sauf si elle se confirme plusieurs fois de suite (vrai mouvement). */
-const LEAD_CAP_S = 0.15;
-const CORRECT_S = 0.06;
-const SUSPECT_M = 0.1;
-const CONFIRM = 3;
+const LEAD_CAP_S = tune("LEAD_CAP_S", 0.15);
+const CORRECT_S = tune("CORRECT_S", 0.06);
+const SUSPECT_M = tune("SUSPECT_M", 0.1);
+const CONFIRM = tune("CONFIRM", 3);
 /** Vallée en contrebas du bord de la prairie (m), niveau de l'eau. */
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
