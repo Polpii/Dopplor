@@ -11,9 +11,11 @@ export type Vec3 = [number, number, number];
  * la vitre), de quoi placer de la 3D derrière la vitre et la cacher derrière la personne.
  */
 export interface Occlusion {
+  /** Par case : distance (× scale m, 255 = rien), puis couverture par le corps (0–255). */
   grid: Uint8Array;
   w: number;
   h: number;
+  channels: number;
   scale: number;
   eye: Vec3;
   /** Largeur, hauteur de l'écran, écart vitre/dalle (m). */

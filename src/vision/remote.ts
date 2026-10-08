@@ -120,7 +120,7 @@ export class RemoteSource implements VisionSource {
     offset += (4 - (offset % 4)) % 4;
 
     if (header.type === "occlusion") {
-      if (this.wantOcclusion) this.lastOcclusion = { ...header, grid: new Uint8Array(buffer, offset, header.w * header.h), at: performance.now() };
+      if (this.wantOcclusion) this.lastOcclusion = { ...header, grid: new Uint8Array(buffer, offset, header.w * header.h * (header.channels ?? 1)), at: performance.now() };
       return;
     }
 

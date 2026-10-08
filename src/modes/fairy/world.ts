@@ -29,17 +29,19 @@ uniform vec2 uRes;
 uniform float uScale;
 uniform float uHasOcc;
 uniform vec2 uCell;
+// r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
-  float code = texture2D(uOcc, uv).r * 255.0;
-  if (code > 250.0) return 1.0;
-  return smoothstep(-0.05, 0.05, code * uScale - zBehind);
+  vec2 o = texture2D(uOcc, uv).rg;
+  if (o.g < 0.002) return 1.0;
+  float behind = 1.0 - smoothstep(-0.05, 0.05, o.r * 255.0 * uScale - zBehind);
+  return 1.0 - o.g * behind;
 }
 // 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
 // Moyenne de 5 lectures autour du point : un bord doux au lieu des marches de la grille.
 float visibleBehind(float zBehind) {
   if (uHasOcc < 0.5) return 1.0;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
-  vec2 c = uCell * 0.7;
+  vec2 c = uCell;
   return (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
     + visibleAt(uv + vec2(0.0, c.y), zBehind) + visibleAt(uv - vec2(0.0, c.y), zBehind)) / 6.0;
 }
@@ -173,7 +175,8 @@ export class MirrorWorld {
   constructor(readonly canvas: HTMLCanvasElement, private resolution = 0.5) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "high-performance" });
     this.renderer.setClearColor(0x000000, 1);
-    this.occTexture = new THREE.DataTexture(new Uint8Array([255]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+    this.occTexture = new THREE.DataTexture(new Uint8Array([255, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
+    this.occTexture.unpackAlignment = 1;
     this.occTexture.magFilter = THREE.LinearFilter;
     this.occTexture.minFilter = THREE.LinearFilter;
     this.occTexture.needsUpdate = true;
@@ -220,12 +223,15 @@ export class MirrorWorld {
     if (fresh) {
       if (this.occTexture.image.width !== occ.w || this.occTexture.image.height !== occ.h) {
         this.occTexture.dispose();
-        this.occTexture = new THREE.DataTexture(new Uint8Array(occ.w * occ.h), occ.w, occ.h, THREE.RedFormat, THREE.UnsignedByteType);
+        this.occTexture = new THREE.DataTexture(new Uint8Array(occ.w * occ.h * 2), occ.w, occ.h, THREE.RGFormat, THREE.UnsignedByteType);
+        this.occTexture.unpackAlignment = 1;
         this.occTexture.magFilter = THREE.LinearFilter;
         this.occTexture.minFilter = THREE.LinearFilter;
         this.shared.uOcc.value = this.occTexture;
       }
-      (this.occTexture.image.data as Uint8Array).set(occ.grid);
+      const data = this.occTexture.image.data as Uint8Array;
+      if (occ.channels === 2) data.set(occ.grid);
+      else for (let i = 0; i < occ.w * occ.h; i++) data.set([occ.grid[i], occ.grid[i] < 255 ? 255 : 0], i * 2);
       this.occTexture.needsUpdate = true;
       this.shared.uScale.value = occ.scale;
       this.shared.uCell.value.set(1 / occ.w, 1 / occ.h);
