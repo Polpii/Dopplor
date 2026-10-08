@@ -174,6 +174,9 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
             "rw": r3(to_m(16)),
             "ls": r3(to_m(11)),
             "rs": r3(to_m(12)),
+            # Centre de chaque paume : poignet, base de l'auriculaire et de l'index du squelette.
+            "lp": r3((to_m(15) + to_m(17) + to_m(19)) / 3),
+            "rp": r3((to_m(16) + to_m(18) + to_m(20)) / 3),
         },
         "vis": {"lw": bool(pose_pts[15, 3] > 0.5), "rw": bool(pose_pts[16, 3] > 0.5)},
     }

@@ -4,8 +4,9 @@ import * as THREE from "three";
 import { glowMaterial, sparkMaterial, wingMaterial, type SharedUniforms } from "./world";
 
 const SPARKS = 220;
-/** Battement des ailes (Hz). */
+/** Battement des ailes (Hz) : en vol, posée (lent, comme un papillon qui se repose). */
 const FLAP_HZ = 13;
+const REST_FLAP_HZ = 1.6;
 
 export class Fairy {
   readonly group = new THREE.Group();
@@ -25,6 +26,7 @@ export class Fairy {
   private spawnDebt = 0;
   /** Éclat (0–1) : quand elle se pose sur une main, quand elle salue. */
   private flash = 0;
+  private flapPhase = 0;
 
   constructor(shared: SharedUniforms) {
     const blue = new THREE.Color(0.45, 0.8, 1.0);
@@ -70,33 +72,40 @@ export class Fairy {
   }
 
   /** Éclat bref (posée sur une main, bonjour). */
-  sparkle(): void {
+  sparkle(amount = 40, energy = 1.6): void {
     this.flash = 1;
-    for (let i = 0; i < 40; i++) this.spawn(this.group.position, 1.6);
+    for (let i = 0; i < amount; i++) this.spawn(this.group.position, energy);
   }
 
-  /** Place la fée et anime ailes, lueur et étincelles. `scale` : taille (profondeur). */
-  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number, scale = 1): void {
+  /**
+   * Place la fée et anime ailes, lueur et étincelles. `scale` : taille (profondeur) ; `rest` :
+   * 0 en vol, 1 posée (ailes lentes et ouvertes, lueur qui respire, presque pas d'étincelles).
+   */
+  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number, scale = 1, rest = 0): void {
     this.group.position.copy(position);
     this.group.scale.setScalar(scale);
     // Penche dans le sens où elle vole, comme un insecte.
-    this.body.rotation.z = THREE.MathUtils.clamp(-velocity.x * 0.6, -0.5, 0.5);
-    const flap = Math.sin(t * Math.PI * 2 * FLAP_HZ);
+    this.body.rotation.z = THREE.MathUtils.clamp(-velocity.x * 0.6, -0.5, 0.5) * (1 - rest);
+    this.flapPhase += dt * Math.PI * 2 * THREE.MathUtils.lerp(FLAP_HZ, REST_FLAP_HZ, rest);
+    const flap = Math.sin(this.flapPhase);
     for (const w of this.wings) {
       // Les ailes tournent autour de l'axe vertical (elles se replient vers l'arrière) et
-      // pointent un peu vers le haut ou le bas.
+      // pointent un peu vers le haut ou le bas. Posée : amplitude réduite, ailes plus relevées.
       // (Aile gauche : le miroir en x inverse le sens des deux rotations.)
-      const fold = (0.35 + 0.75 * (0.5 + 0.5 * flap)) * (w.lift > 0 ? 1 : 0.8);
-      w.pivot.rotation.set(0, fold * w.side, w.lift * 0.9 * w.side);
+      const amp = THREE.MathUtils.lerp(0.75, 0.45, rest);
+      const fold = (0.35 + amp * (0.5 + 0.5 * flap)) * (w.lift > 0 ? 1 : 0.8);
+      w.pivot.rotation.set(0, fold * w.side, w.lift * (0.9 + 0.35 * rest) * w.side);
     }
     this.flash = Math.max(0, this.flash - dt * 1.6);
-    const pulse = 1 + 0.08 * Math.sin(t * 5.3) + 0.6 * this.flash;
+    // Posée : la lueur respire lentement.
+    const breath = rest * 0.18 * Math.sin(t * 2.2);
+    const pulse = 1 + 0.08 * (1 - rest) * Math.sin(t * 5.3) + breath + 0.6 * this.flash;
     this.halo.scale.setScalar(pulse * (1 + 0.15 * this.flash));
     this.glow.scale.setScalar(1 + 0.05 * Math.sin(t * 9.1) + 0.3 * this.flash);
 
     // Traînée : plus elle va vite, plus elle sème.
     const speed = velocity.length();
-    this.spawnDebt += dt * (25 + 90 * Math.min(1, speed / 0.8));
+    this.spawnDebt += dt * (25 * (1 - 0.8 * rest) + 90 * Math.min(1, speed / 0.8));
     while (this.spawnDebt >= 1) {
       this.spawnDebt -= 1;
       this.spawn(position, 1);

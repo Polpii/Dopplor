@@ -118,6 +118,8 @@ async function main(): Promise<void> {
   );
   // Fée : 3D derrière la vitre, cachée derrière le reflet de la personne (serveur avec profondeur).
   const fairy = new FairyMode(
+    scene,
+    () => source.frameSize(),
     () => source.occlusion?.() ?? null,
     (on) => source.setOcclusion?.(on),
     () => {

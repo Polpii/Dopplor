@@ -20,7 +20,8 @@ export interface Occlusion {
   eye: Vec3;
   /** Largeur, hauteur de l'écran, écart vitre/dalle (m). */
   screen: Vec3;
-  body: Record<"chest" | "hips" | "head" | "lw" | "rw" | "ls" | "rs", Vec3>;
+  /** Personne réelle (devant la vitre) : poitrine, hanches, tête, poignets, épaules, paumes. */
+  body: Record<"chest" | "hips" | "head" | "lw" | "rw" | "ls" | "rs" | "lp" | "rp", Vec3>;
   vis: { lw: boolean; rw: boolean };
   /** Reçue à (performance.now()). */
   at: number;

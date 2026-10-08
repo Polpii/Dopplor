@@ -1,23 +1,31 @@
 // Mode fée : une petite fée lumineuse vit derrière le miroir. Elle tourne autour du reflet de la
 // personne et, quand elle passe derrière elle, elle disparaît derrière son reflet (le serveur
-// envoie la silhouette du reflet, avec sa distance, voir server/occlusion.py). Lever la main :
-// elle vient s'y poser. Personne : elle flâne au milieu du miroir et attend.
+// envoie la silhouette du reflet, avec sa distance, voir server/occlusion.py). Personne : elle
+// flâne au milieu du miroir et attend.
+//
+// Main à plat, paume vers le ciel : elle la remarque (petit tour sur elle-même), vient en
+// spirale et s'y pose, ailes lentes, lueur qui respire, petits sauts de temps en temps. Elle
+// suit la main. Approcher l'autre main à plat : elle saute dessus. Fermer la main, la retourner
+// ou la baisser : elle s'envole ; un geste brusque : elle s'envole d'un coup, effrayée.
 //
 // Tout se passe en 3D dans l'espace du reflet (derrière la vitre), vu depuis l'œil de la
 // personne : la fée est exactement là où elle serait si elle volait à côté de son reflet.
 import * as THREE from "three";
+import type { Scene } from "../../scene";
 import type { Occlusion } from "../../vision/source";
+import { handStates } from "../gestures";
 import { Fairy } from "./fairy";
 import { MirrorWorld, reflected } from "./world";
 
-/** Main levée (poignet au-dessus de l'épaule) tenue ce temps : la fée vient s'y poser. */
-const HAND_UP_MS = 350;
 /** Ressort qui la tire vers sa cible : raideur, amortissement (un peu sous l'amorti : elle vole). */
 const STIFFNESS = 10;
 const DAMPING = 0.75;
+/** Posée : elle suit la main de près. */
+const PERCH_STIFFNESS = 80;
 
-type Mood = "wander" | "orbit" | "hand";
+type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff";
 type Path = "ellipse" | "saddle" | "spiral" | "visit";
+type Side = "left" | "right";
 const PATHS: Path[] = ["ellipse", "saddle", "spiral", "visit"];
 /** Vitesse de chaque figure (rad/s). */
 const PATH_SPEED: Record<Path, number> = { ellipse: 1.0, saddle: 0.85, spiral: 1.2, visit: 0.7 };
@@ -27,14 +35,49 @@ const PATH_BLEND_MS = 1800;
  * Taille selon la profondeur : plus grande devant la personne (plus près), plus petite derrière,
  * en plus de la perspective (trop faible seule pour qu'on sente qu'elle s'éloigne).
  */
-const DEPTH_SCALE = 1.1;
+const DEPTH_SCALE = 0.9;
 const SCALE_MIN = 0.55;
-const SCALE_MAX = 1.35;
+const SCALE_MAX = 1.15;
+/** Devant la personne, elle s'approche moins qu'elle ne s'éloigne derrière (m). */
+const FRONT_DEPTH = 0.45;
+
+/** Main à plat : doigts tendus, paume vers le ciel, entre les hanches et la tête, tenue un instant. */
+const FLAT_REACH = 1.45;
+const FLAT_UP = 0.3;
+const FLAT_MS = 300;
+/** La main n'est plus à plat (fermée, retournée, baissée) depuis ce temps : elle s'envole. */
+const LEAVE_MS = 350;
+/** Main qui bouge plus vite que ça (m/s) : elle s'envole d'un coup. */
+const STARTLE_SPEED = 1.6;
+/** Elle remarque la main, puis vient en spirale (ms). */
+const NOTICE_MS = 450;
+const APPROACH_MS = 1500;
+const HOP_MS = 650;
+/** Posée à cette hauteur au-dessus du centre de la paume (m). */
+const PERCH_HEIGHT = 0.04;
+/** Autre main à plat à moins de ça de la première (m) : elle saute dessus. */
+const HOP_TO_OTHER = 0.25;
+const TAKEOFF_MS = 900;
+/** Posée devant le corps : sa lumière n'est pas cachée par la main qui la porte (m). */
+const PERCH_BIAS = 0.08;
+
+const UP = new THREE.Vector3(0, 1, 0);
+const smooth = (k: number) => k * k * (3 - 2 * k);
+
+interface HandInfo {
+  /** À plat depuis (performance.now()), 0 sinon. */
+  flatSince: number;
+  /** Plus à plat depuis. */
+  notFlatSince: number;
+  ups: number[];
+  palm: THREE.Vector3 | null;
+  palmAt: number;
+  speed: number;
+}
 
 export class FairyMode {
   readonly id = "fairy";
   private canvas: HTMLCanvasElement;
-  private hint: HTMLElement;
   private world: MirrorWorld | null = null;
   private fairy: Fairy | null = null;
   private active = false;
@@ -44,14 +87,31 @@ export class FairyMode {
   private last = 0;
   private start = 0;
   private mood: Mood = "wander";
-  private handSince: Record<"lw" | "rw", number> = { lw: 0, rw: 0 };
-  private hand: "lw" | "rw" | null = null;
+  private moodSince = 0;
   private dart = new THREE.Vector3();
   private nextDart = 0;
   private chest: THREE.Vector3 | null = null;
   private audio: AudioContext | null = null;
+  private path: Path = "ellipse";
+  private prevPath: Path | null = null;
+  private pathSince = 0;
+  private pathFor = 9000;
+  private dir = 1;
+  /** Main portant la fée (ou visée), et d'où elle part pour y venir. */
+  private perch: Side | null = null;
+  private from = new THREE.Vector3();
+  private fromAngle = 0;
+  private nextHop = 0;
+  private hopAt = 0;
+  private rest = 0;
+  private hands: Record<Side, HandInfo> = {
+    left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
+    right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
+  };
 
   constructor(
+    private scene: Scene,
+    private frameSize: () => [number, number],
     private occlusion: () => Occlusion | null,
     private setOcclusion: (on: boolean) => void,
     /** Taille de l'écran (m) d'après la calibration, en attendant le serveur. */
@@ -60,10 +120,7 @@ export class FairyMode {
     this.canvas = document.createElement("canvas");
     this.canvas.id = "fairy-canvas";
     this.canvas.className = "hidden";
-    this.hint = document.createElement("div");
-    this.hint.id = "fairy-hint";
-    this.hint.className = "hidden";
-    document.body.append(this.canvas, this.hint);
+    document.body.append(this.canvas);
     window.addEventListener("resize", () => this.world?.resize());
   }
 
@@ -80,19 +137,16 @@ export class FairyMode {
       this.world.scene.add(...this.fairy.objects);
     }
     this.canvas.classList.remove("hidden");
-    this.hint.classList.remove("hidden");
     this.start = now;
     this.last = now;
-    this.mood = "wander";
-    this.hand = null;
-    this.setHint("Une fée vit derrière le miroir…");
+    this.setMood("wander", now);
+    this.perch = null;
   }
 
   exit(): void {
     this.active = false;
     this.setOcclusion(false);
     this.canvas.classList.add("hidden");
-    this.hint.classList.add("hidden");
     this.world?.clear();
   }
 
@@ -107,31 +161,90 @@ export class FairyMode {
     if (!this.world.ready) return;
 
     const present = occ !== null && now - occ.at < 600;
+    this.watchHands(occ, present, now);
     const target = this.target(occ, present, now, t, dt);
-    // Petits élans, comme un insecte : de temps en temps, un coup d'aile de côté.
+    const perched = this.mood === "perched";
+    // Petits élans, comme un insecte : de temps en temps, un coup d'aile de côté (pas posée).
     if (now > this.nextDart) {
       this.nextDart = now + 700 + Math.random() * 1600;
       this.dart.set((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.08);
     }
     this.dart.multiplyScalar(Math.exp(-dt * 3));
-    target.add(this.dart);
-    // Ressort vers la cible.
-    const acc = target.clone().sub(this.pos).multiplyScalar(STIFFNESS).addScaledVector(this.vel, -2 * Math.sqrt(STIFFNESS) * DAMPING);
+    if (this.mood === "orbit" || this.mood === "wander") target.add(this.dart);
+    // Ressort vers la cible (raide quand elle est posée ou qu'elle arrive).
+    const k = perched ? PERCH_STIFFNESS : this.mood === "approach" ? THREE.MathUtils.lerp(STIFFNESS, PERCH_STIFFNESS, smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS))) : STIFFNESS;
+    const acc = target.clone().sub(this.pos).multiplyScalar(k).addScaledVector(this.vel, -2 * Math.sqrt(k) * DAMPING);
     this.vel.addScaledVector(acc, dt);
     this.pos.addScaledVector(this.vel, dt);
-    // Vol stationnaire : un léger tremblé vertical.
-    const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17), 0));
+
+    this.rest += ((perched ? 1 : 0) - this.rest) * (1 - Math.exp(-dt * 4));
+    this.world.shared.uBias.value = PERCH_BIAS * this.rest;
+    // Vol stationnaire : un léger tremblé vertical (pas posée).
+    const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
     const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
-    const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX);
-    this.fairy.update(shown, this.vel, t, dt, scale);
+    const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX) * (1 - 0.15 * this.rest);
+    this.fairy.update(shown, this.vel, t, dt, scale, this.rest);
     this.world.render();
+  }
+
+  // --- Les mains --------------------------------------------------------------------------------
+
+  /** Main à plat, paume vers le ciel ? Et où est chaque paume (reflet, repère Three), à quelle vitesse. */
+  private watchHands(occ: Occlusion | null, present: boolean, now: number): void {
+    const [w, h] = this.frameSize();
+    const states = handStates(this.scene, now, w, h);
+    for (const side of ["left", "right"] as const) {
+      const info = this.hands[side];
+      const s = states.find((x) => x.track.side === side);
+      if (s) info.ups = [...info.ups, s.palmUp].slice(-3);
+      // Orientation de la paume bruitée (mains petites à 2 m) : la plus haute des 3 dernières.
+      const flat = !!s && present && s.extended >= 3 && s.reach >= FLAT_REACH && Math.max(...info.ups) >= FLAT_UP && s.anchored && s.height < 1.2 && s.height > -1.2;
+      if (flat) {
+        info.flatSince ||= now;
+        info.notFlatSince = 0;
+      } else {
+        info.flatSince = 0;
+        info.notFlatSince ||= now;
+      }
+      if (occ && present) {
+        const palm = reflected(side === "left" ? occ.body.lp : occ.body.rp);
+        if (info.palm && occ.at !== info.palmAt) {
+          const dt = Math.max(0.01, (occ.at - info.palmAt) / 1000);
+          info.speed += (palm.distanceTo(info.palm) / dt - info.speed) * 0.5;
+        }
+        if (occ.at !== info.palmAt) info.palm = palm;
+        info.palmAt = occ.at;
+      } else {
+        info.palm = null;
+        info.speed = 0;
+      }
+    }
+  }
+
+  private flatFor(side: Side, now: number): number {
+    const f = this.hands[side].flatSince;
+    return f ? now - f : 0;
+  }
+
+  /** Où elle se pose sur la paume de cette main (avec un petit saut de temps en temps). */
+  private perchSpot(side: Side, now: number): THREE.Vector3 | null {
+    const palm = this.hands[side].palm;
+    if (!palm) return null;
+    const hop = now - this.hopAt < HOP_MS ? Math.sin((Math.PI * (now - this.hopAt)) / HOP_MS) * 0.03 : 0;
+    return palm.clone().addScaledVector(UP, PERCH_HEIGHT + hop);
+  }
+
+  // --- Comportement -----------------------------------------------------------------------------
+
+  private setMood(mood: Mood, now: number): void {
+    this.mood = mood;
+    this.moodSince = now;
   }
 
   private target(occ: Occlusion | null, present: boolean, now: number, t: number, dt: number): THREE.Vector3 {
     if (!present || !occ) {
-      if (this.mood !== "wander") this.setHint("Une fée vit derrière le miroir…");
-      this.mood = "wander";
-      this.hand = null;
+      if (this.mood === "perched") this.takeoff(now, false);
+      if (this.mood !== "takeoff" || now - this.moodSince > TAKEOFF_MS) this.setMood("wander", now);
       this.chest = null;
       // Flâne au milieu du miroir, un peu derrière la vitre.
       const [sw, sh] = occ?.screen ?? [0.62, 1.1];
@@ -142,40 +255,111 @@ export class FairyMode {
     this.chest = this.chest ? this.chest.lerp(chest, 0.2) : chest;
     const head = reflected(b.head);
     const hips = reflected(b.hips);
+    const since = now - this.moodSince;
 
-    // Main levée ?
-    for (const side of ["lw", "rw"] as const) {
-      const wrist = reflected(b[side]);
-      const shoulder = reflected(side === "lw" ? b.ls : b.rs);
-      const up = occ.vis[side] && wrist.y > shoulder.y + 0.04;
-      this.handSince[side] = up ? this.handSince[side] || now : 0;
+    switch (this.mood) {
+      case "perched": {
+        const side = this.perch!;
+        const info = this.hands[side];
+        const other: Side = side === "left" ? "right" : "left";
+        const spot = this.perchSpot(side, now);
+        if (!spot || info.speed > STARTLE_SPEED) return this.takeoff(now, true);
+        if (info.notFlatSince && now - info.notFlatSince > LEAVE_MS) return this.takeoff(now, false);
+        // L'autre main à plat tout près : elle saute dessus.
+        const otherPalm = this.hands[other].palm;
+        if (this.flatFor(other, now) > FLAT_MS && otherPalm && otherPalm.distanceTo(info.palm!) < HOP_TO_OTHER) {
+          this.goTo(other, now, true);
+          return spot;
+        }
+        if (now > this.nextHop) {
+          this.hopAt = now;
+          this.nextHop = now + 2200 + Math.random() * 2500;
+        }
+        return spot;
+      }
+      case "notice": {
+        // Elle a vu la main : petit tour sur elle-même, sur place.
+        const spot = this.perchSpot(this.perch!, now);
+        if (!spot || this.hands[this.perch!].notFlatSince) return this.backToOrbit(now, head, hips, t, dt);
+        if (since > NOTICE_MS) {
+          this.from.copy(this.pos);
+          this.fromAngle = Math.atan2(this.pos.z - spot.z, this.pos.x - spot.x);
+          this.setMood("approach", now);
+        }
+        const a = (since / NOTICE_MS) * Math.PI * 2;
+        return this.from.clone().add(new THREE.Vector3(0.035 * Math.cos(a), 0.035 * Math.sin(a), 0));
+      }
+      case "approach": {
+        // En spirale vers la paume : le rayon et la hauteur fondent à l'arrivée.
+        const spot = this.perchSpot(this.perch!, now);
+        const info = this.hands[this.perch!];
+        if (!spot || (info.notFlatSince && now - info.notFlatSince > LEAVE_MS)) return this.backToOrbit(now, head, hips, t, dt);
+        const u = Math.min(1, since / APPROACH_MS);
+        const e = smooth(u);
+        const r = Math.max(0.05, this.from.distanceTo(spot)) * (1 - e) * 0.6;
+        const a = this.fromAngle + u * Math.PI * 1.6;
+        const out = spot.clone().add(new THREE.Vector3(r * Math.cos(a), 0.12 * (1 - e) * Math.sin(Math.PI * u) + r * 0.3, r * Math.sin(a)));
+        if (u >= 1 && this.pos.distanceTo(spot) < 0.04) {
+          this.setMood("perched", now);
+          this.nextHop = now + 1800;
+          this.fairy?.sparkle(30, 1.2);
+          this.chime([1568, 2093, 2637]);
+        }
+        return out;
+      }
+      case "takeoff":
+        if (since > TAKEOFF_MS) this.setMood("orbit", now);
+        return this.pos.clone().addScaledVector(this.vel, 0.15);
+      default:
+        // Main à plat tenue : elle la remarque (la plus haute des deux si elles le sont toutes les deux).
+        for (const side of ["right", "left"] as const) {
+          if (this.flatFor(side, now) > FLAT_MS && this.hands[side].palm) {
+            this.goTo(side, now, false);
+            return this.pos.clone();
+          }
+        }
+        if (this.mood !== "orbit") this.setMood("orbit", now);
+        return this.orbit(head, hips, now, t, dt);
     }
-    const raised = (["lw", "rw"] as const).filter((s) => this.handSince[s] && now - this.handSince[s] > HAND_UP_MS);
-    if (this.hand && !raised.includes(this.hand)) this.hand = null;
-    if (!this.hand && raised.length) this.hand = raised.sort((a, c) => this.handSince[a] - this.handSince[c])[0];
+  }
 
-    if (this.hand) {
-      const wrist = reflected(b[this.hand]);
-      if (this.mood !== "hand") {
-        this.mood = "hand";
-        this.setHint("");
-      }
-      // Au-dessus de la paume, petits cercles ; quand elle arrive : éclat et carillon.
-      const spot = wrist.clone().add(new THREE.Vector3(0.03 * Math.cos(t * 3), 0.1 + 0.015 * Math.sin(t * 4), 0.03 * Math.sin(t * 3)));
-      if (this.pos.distanceTo(spot) < 0.06 && this.vel.length() < 0.5 && !this.landed) {
-        this.landed = true;
-        this.fairy?.sparkle();
-        this.chime();
-      }
-      return spot;
+  /** Vers une main : la remarque d'abord (ou, si elle saute d'une main à l'autre, directement). */
+  private goTo(side: Side, now: number, hop: boolean): void {
+    this.perch = side;
+    this.from.copy(this.pos);
+    this.fairy?.sparkle(hop ? 8 : 14, 0.8);
+    if (hop) {
+      const spot = this.perchSpot(side, now)!;
+      this.fromAngle = Math.atan2(this.pos.z - spot.z, this.pos.x - spot.x);
+      this.setMood("approach", now);
+      this.moodSince = now - APPROACH_MS * 0.55; // un saut : la fin de l'approche seulement
+    } else {
+      this.setMood("notice", now);
+      this.chime([2349, 2637]);
     }
-    this.landed = false;
-    if (this.mood !== "orbit") {
-      this.mood = "orbit";
-      this.setHint("Lève la main : elle viendra s'y poser");
-    }
-    // Autour du corps, suivant une figure qui change toutes les 7 à 11 s (en fondu) ; derrière
-    // (plus loin que la poitrine) : cachée par le reflet.
+  }
+
+  /** Elle s'envole : doucement (main fermée, retournée, baissée), ou d'un coup (geste brusque). */
+  private takeoff(now: number, startled: boolean): THREE.Vector3 {
+    this.vel.addScaledVector(UP, startled ? 1.6 : 0.7).add(new THREE.Vector3((Math.random() - 0.5) * (startled ? 1.2 : 0.4), 0, (Math.random() - 0.5) * 0.4));
+    this.fairy?.sparkle(startled ? 45 : 20, startled ? 2.2 : 1.0);
+    this.chime(startled ? [2637, 2093, 1568] : [1760, 2349]);
+    this.perch = null;
+    this.setMood("takeoff", now);
+    return this.pos.clone();
+  }
+
+  private backToOrbit(now: number, head: THREE.Vector3, hips: THREE.Vector3, t: number, dt: number): THREE.Vector3 {
+    this.perch = null;
+    this.setMood("orbit", now);
+    return this.orbit(head, hips, now, t, dt);
+  }
+
+  /**
+   * Autour du corps, suivant une figure qui change toutes les 7 à 11 s (en fondu) ; derrière
+   * (plus loin que la poitrine) : cachée par le reflet.
+   */
+  private orbit(head: THREE.Vector3, hips: THREE.Vector3, now: number, t: number, dt: number): THREE.Vector3 {
     if (now - this.pathSince > this.pathFor) {
       this.prevPath = this.path;
       const others = PATHS.filter((p) => p !== this.path);
@@ -185,12 +369,12 @@ export class FairyMode {
       if (Math.random() < 0.4) this.dir = -this.dir;
     }
     this.angle += dt * this.dir * PATH_SPEED[this.path] * (1 + 0.2 * Math.sin(t * 0.31));
-    const body = { c: this.chest, head, hips };
+    const body = { c: this.chest!, head, hips };
     const next = this.pathPoint(this.path, body, t, (now - this.pathSince) / 1000);
     const k = Math.min(1, (now - this.pathSince) / PATH_BLEND_MS);
     if (k >= 1 || !this.prevPath) return next;
     const prev = this.pathPoint(this.prevPath, body, t, Infinity);
-    return prev.lerp(next, k * k * (3 - 2 * k));
+    return prev.lerp(next, smooth(k));
   }
 
   /**
@@ -202,55 +386,43 @@ export class FairyMode {
     const { c, head, hips } = b;
     const mid = (hips.y + head.y) / 2;
     const top = head.y + 0.2;
+    // Profondeur : loin derrière, moins loin devant (elle ne vient pas trop près de la vitre).
+    const depth = (z: number, behind: number) => c.z + z * (z > 0 ? FRONT_DEPTH : behind);
     switch (path) {
       case "ellipse": {
         // Ellipse profonde et inclinée : monte d'un côté, descend de l'autre.
         const rx = 0.48 + 0.06 * Math.sin(t * 0.3);
-        const rz = 0.72;
-        return new THREE.Vector3(c.x + rx * Math.cos(a), mid + 0.24 * Math.sin(a + 0.9), c.z + rz * Math.sin(a));
+        return new THREE.Vector3(c.x + rx * Math.cos(a), mid + 0.24 * Math.sin(a + 0.9), depth(Math.sin(a), 0.72));
       }
-      case "saddle": {
+      case "saddle":
         // Boucle en selle : deux bosses par tour, haut devant et derrière, bas sur les côtés.
-        return new THREE.Vector3(c.x + 0.52 * Math.sin(a), mid + 0.1 - 0.3 * Math.cos(2 * a), c.z + 0.62 * Math.cos(a));
-      }
+        return new THREE.Vector3(c.x + 0.52 * Math.sin(a), mid + 0.1 - 0.3 * Math.cos(2 * a), depth(Math.cos(a), 0.62));
       case "spiral": {
         // Spirale : monte de la taille au-dessus de la tête, puis redescend (en 9 s).
         const u = 0.5 - 0.5 * Math.cos((Math.min(since, 1e6) / 9) * Math.PI * 2);
-        return new THREE.Vector3(c.x + 0.42 * Math.cos(a), hips.y - 0.05 + (top - hips.y + 0.05) * u, c.z + 0.6 * Math.sin(a));
+        return new THREE.Vector3(c.x + 0.42 * Math.cos(a), hips.y - 0.05 + (top - hips.y + 0.05) * u, depth(Math.sin(a), 0.6));
       }
       case "visit": {
-        // Visite : passe tout près devant le visage, puis repart large derrière.
+        // Visite : passe devant le visage, puis repart large derrière.
         const front = Math.max(0, Math.cos(a));
-        return new THREE.Vector3(c.x + 0.55 * Math.sin(a) * (1 - 0.6 * front), head.y - 0.05 - 0.25 * (1 - front), c.z + 0.28 * front - 0.6 * (1 - front) * Math.abs(Math.sin(a * 0.5)));
+        return new THREE.Vector3(c.x + 0.55 * Math.sin(a) * (1 - 0.6 * front), head.y - 0.05 - 0.25 * (1 - front), c.z + 0.25 * front - 0.6 * (1 - front) * Math.abs(Math.sin(a * 0.5)));
       }
     }
   }
 
-  private landed = false;
-  private path: Path = "ellipse";
-  private prevPath: Path | null = null;
-  private pathSince = 0;
-  private pathFor = 9000;
-  private dir = 1;
-
-  private setHint(text: string): void {
-    if (this.hint.textContent !== text) this.hint.textContent = text;
-    this.hint.classList.toggle("empty", text === "");
-  }
-
-  /** Petit carillon cristallin (deux notes aiguës qui s'éteignent). */
-  private chime(): void {
+  /** Petites notes cristallines qui s'éteignent. */
+  private chime(notes: number[]): void {
     try {
       this.audio ??= new AudioContext();
       const ctx = this.audio;
       const t0 = ctx.currentTime + 0.01;
-      [1568, 2093, 2637].forEach((f, i) => {
+      notes.forEach((f, i) => {
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.type = "sine";
         o.frequency.value = f;
         g.gain.setValueAtTime(0, t0 + i * 0.07);
-        g.gain.linearRampToValueAtTime(0.08, t0 + i * 0.07 + 0.01);
+        g.gain.linearRampToValueAtTime(0.07, t0 + i * 0.07 + 0.01);
         g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.07 + 0.6);
         o.connect(g).connect(ctx.destination);
         o.start(t0 + i * 0.07);

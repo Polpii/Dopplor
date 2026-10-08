@@ -38,8 +38,11 @@ float visibleAt(vec2 uv, float zBehind) {
 }
 // 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
 // Moyenne de 5 lectures autour du point : un bord doux au lieu des marches de la grille.
+// uBias : la fée compte comme un peu plus près qu'elle n'est (posée sur une main, sa lumière
+// ne doit pas être cachée par cette main).
 float visibleBehind(float zBehind) {
   if (uHasOcc < 0.5) return 1.0;
+  zBehind -= uBias;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
   vec2 c = uCell;
   return (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
@@ -64,6 +67,7 @@ export interface SharedUniforms {
   uScale: { value: number };
   uHasOcc: { value: number };
   uCell: { value: THREE.Vector2 };
+  uBias: { value: number };
   [name: string]: THREE.IUniform;
 }
 
@@ -188,6 +192,7 @@ export class MirrorWorld {
       uScale: { value: 0.02 },
       uHasOcc: { value: 0 },
       uCell: { value: new THREE.Vector2(1 / 108, 1 / 192) },
+      uBias: { value: 0 },
     };
     this.camera.matrixAutoUpdate = false;
     this.resize();
