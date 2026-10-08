@@ -31,8 +31,9 @@ const ARC_STEP = (48 * Math.PI) / 180;
 /** Éclosion : la première bulle, puis une toutes les … (ms) — dans le rythme du menu 2D. */
 const FIRST_MS = 90;
 const STEP_MS = 120;
-/** Marge au bord de l'écran (fraction). */
+/** Marge au bord de l'écran (fraction) ; en haut, de quoi garder le nom au-dessus de la bulle. */
 const MARGIN = 0.06;
+const MARGIN_TOP = 0.11;
 /** Les bulles sont cachées par le corps devant elles (la main qui les touche aussi). */
 const BIAS = 0;
 
@@ -289,7 +290,7 @@ export class Menu3D implements MenuStage {
       for (const b of this.bubbles) {
         const [x, y] = this.world.project(b.home);
         dx = x < MARGIN ? Math.max(dx, MARGIN - x) : x > 1 - MARGIN ? Math.min(dx, 1 - MARGIN - x) : dx;
-        dy = y < MARGIN ? Math.max(dy, MARGIN - y) : y > 1 - MARGIN ? Math.min(dy, 1 - MARGIN - y) : dy;
+        dy = y < MARGIN_TOP ? Math.max(dy, MARGIN_TOP - y) : y > 1 - MARGIN ? Math.min(dy, 1 - MARGIN - y) : dy;
       }
       if (!dx && !dy) break;
       // Décalage à l'écran → mètres à cette profondeur.
