@@ -27,8 +27,10 @@ EMPTY = 255
 DEPTH_RANGE = 0.8
 #: Bord du corps : le masque du modèle (probabilité) passe de transparent à couvrant entre ces
 #: deux valeurs, puis un léger flou (en cases) : un contour lisse, sans marches.
-MASK_SOFT = (0.25, 0.75)
-EDGE_BLUR = 1.2
+# Bord net (une case lissée) : trop doux, un objet derrière une partie fine (une jambe) semblait se
+# fondre dans le corps au lieu d'être caché.
+MASK_SOFT = (0.4, 0.6)
+EDGE_BLUR = 0.6
 #: La distance du corps est étendue de quelques cases autour de lui, pour que le bord doux
 #: (lu en interpolant) garde la bonne distance.
 DEPTH_SPREAD = 7

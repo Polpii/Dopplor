@@ -38,21 +38,23 @@ uniform float uFade;
 // r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
   vec2 o = texture2D(uOcc, uv).rg;
-  if (o.g < 0.002) return 1.0;
-  float behind = 1.0 - smoothstep(-0.03, 0.03, o.r * 255.0 * uScale - zBehind);
-  return 1.0 - o.g * behind;
+  // Couverture franche (bord lissé sur ~1 case) et décision devant / derrière nette (±1 cm) :
+  // un objet derrière une jambe est caché, il ne se fond pas dedans.
+  float cover = smoothstep(0.35, 0.65, o.g);
+  if (cover < 0.002) return 1.0;
+  float behind = 1.0 - smoothstep(-0.01, 0.01, o.r * 255.0 * uScale - zBehind);
+  return 1.0 - cover * behind;
 }
 // 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
-// Moyenne de 5 lectures autour du point : un bord doux au lieu des marches de la grille.
+// Une seule lecture (lissée par le filtrage de la texture) : la moyenne de 5 lectures étalait le
+// bord sur 3 cases, l'objet semblait fondre dans le corps.
 // uBias : la fée compte comme un peu plus près qu'elle n'est (posée sur une main, sa lumière
 // ne doit pas être cachée par cette main).
 float visibleBehind(float zBehind) {
   if (uHasOcc < 0.5) return uFade;
   zBehind -= uBias;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
-  vec2 c = uCell;
-  return uFade * (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
-    + visibleAt(uv + vec2(0.0, c.y), zBehind) + visibleAt(uv - vec2(0.0, c.y), zBehind)) / 6.0;
+  return uFade * visibleAt(uv, zBehind);
 }
 `;
 
@@ -234,7 +236,8 @@ export class MirrorWorld {
     if (occ) {
       // L'œil bouge peu : un léger lissage évite que tout le monde 3D frémisse.
       const e = toThree(occ.eye);
-      this.eye = this.eye ? this.eye.lerp(e, 0.25) : e;
+      // Lissé : les objets fixes dans le reflet (bulles) ne tremblent pas avec l'estimation.
+      this.eye = this.eye ? this.eye.lerp(e, 0.1) : e;
       this.screen = occ.screen;
     }
     if (fresh) {

@@ -1,12 +1,13 @@
-// Mode bulles : de belles bulles bleu néon, bien rondes, flottent devant le miroir comme de vraies
-// bulles (dérive lente et courbe, dans tous les sens) ; on les éclate du bout du doigt. Pop : la
-// bulle gonfle d'un coup dans un éclair, puis éclate en gouttelettes qui retombent en
-// scintillant, un anneau néon s'élargit, et ça fait « pop ». Une nouvelle bulle naît ailleurs.
+// Mode bulles : de belles bulles bleu néon, bien rondes, flottent dans la pièce du reflet comme de
+// vraies bulles (dérive lente et courbe) ; on les éclate du bout du doigt. Pop : la bulle gonfle
+// d'un coup dans un éclair, puis éclate en gouttelettes qui retombent en scintillant, un anneau
+// néon s'élargit, et ça fait « pop ». Une nouvelle bulle naît ailleurs.
 //
-// Les bulles vivent à l'écran (leur place ne dépend pas de la pose : elles ne bougent pas quand
-// la personne bouge) ; seule leur profondeur, un peu devant ou derrière le reflet de la personne,
-// sert à les cacher derrière son corps. On les touche là où le doigt les recouvre dans le reflet
-// dessiné.
+// Les bulles sont fixes dans l'espace du reflet, comme de vrais objets : une bulle près de la
+// table reste près de la table dans le reflet. Si la personne se décale, elles glissent à l'écran
+// (chacune selon sa distance) et d'autres entrent dans le champ : elles occupent un grand volume
+// (~4 m de large) autour de l'endroit où le mode a commencé. Celles de derrière, plus petites,
+// passent derrière le corps. On les touche là où le doigt les recouvre dans le reflet dessiné.
 import * as THREE from "three";
 import type { MirrorWorld, SharedUniforms } from "../fairy/world";
 
@@ -15,15 +16,18 @@ export interface Fingertips {
   tips: [number, number][];
 }
 
-const COUNT = 11;
 const COLOR = new THREE.Color("#2f8dff");
-/** Rayon à l'écran (part de la largeur de l'écran). */
-const R_MIN = 0.035;
-const R_MAX = 0.075;
-/** Dérive (part de la largeur de l'écran par seconde). */
-const DRIFT = 0.035;
-/** Profondeur autour du reflet de la personne (m) : devant (+) ou derrière (−). */
-const DEPTH = 0.35;
+/** Volume des bulles dans le reflet (m) : largeur, et profondeur autour du reflet de la personne
+ * (devant + / derrière −). ~9 bulles dans le champ de l'écran. */
+const WIDTH = 4;
+const COUNT = 30;
+const FRONT = 0.5;
+const BACK = 0.7;
+/** Rayon (m) : petites derrière, grosses devant (en plus de la perspective). */
+const R_BACK = 0.03;
+const R_FRONT = 0.085;
+/** Dérive (m/s). */
+const DRIFT = 0.06;
 const GROW_MS = 700;
 const POP_MS = 140;
 const SPARKS = 600;
@@ -36,19 +40,15 @@ uniform float uScale;
 uniform float uHasOcc;
 uniform vec2 uCell;
 uniform float uSolid;
-float visibleAt(vec2 uv, float zBehind) {
-  vec2 o = texture2D(uOcc, uv).rg;
-  if (o.g < 0.002) return 1.0;
-  float behind = 1.0 - smoothstep(-0.03, 0.03, o.r * 255.0 * uScale - zBehind);
-  return 1.0 - o.g * behind;
-}
+// Bord franc : la bulle est cachée derrière le corps (même une jambe), elle ne s'y fond pas.
 float visible() {
   if (uHasOcc < 0.5) return 1.0;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
-  vec2 c = uCell;
-  float z = uSolid;
-  return (visibleAt(uv, z) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), z) + visibleAt(uv - vec2(c.x, 0.0), z)
-    + visibleAt(uv + vec2(0.0, c.y), z) + visibleAt(uv - vec2(0.0, c.y), z)) / 6.0;
+  vec2 o = texture2D(uOcc, uv).rg;
+  float cover = smoothstep(0.35, 0.65, o.g);
+  if (cover < 0.002) return 1.0;
+  float behind = 1.0 - smoothstep(-0.01, 0.01, o.r * 255.0 * uScale - uSolid);
+  return 1.0 - cover * behind;
 }`;
 
 /** Bulle bleu néon, bien ronde : bord lumineux, remplissage plus dense vers le bord, reflet. */
@@ -142,13 +142,10 @@ function ringMaterial(): THREE.ShaderMaterial {
 
 interface Bubble {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
-  /** Place et vitesse à l'écran (px CSS, px/s), rayon (px), profondeur par rapport au reflet (m). */
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
+  /** Place et vitesse dans le reflet (m, m/s), rayon (m). */
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
   r: number;
-  depth: number;
   phase: number;
   bornAt: number;
   poppedAt: number;
@@ -170,6 +167,8 @@ export class BubbleMode {
   private sAge = new Float32Array(SPARKS);
   private sDur = new Float32Array(SPARKS);
   private nextSpark = 0;
+  /** Volume des bulles dans le reflet (fixé à l'entrée dans le mode). */
+  private box = new THREE.Box3();
   private rings: { mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>; at: number; r: number }[] = [];
 
   constructor(
@@ -180,7 +179,7 @@ export class BubbleMode {
     for (let i = 0; i < COUNT; i++) {
       const mesh = new THREE.Mesh(quad, bubbleMaterial(world.shared));
       this.group.add(mesh);
-      this.bubbles.push({ mesh, x: 0, y: 0, vx: 0, vy: 0, r: 60, depth: 0, phase: Math.random() * 100, bornAt: 0, poppedAt: 0 });
+      this.bubbles.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), r: 0.05, phase: Math.random() * 100, bornAt: 0, poppedAt: 0 });
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(this.sPos, 3));
@@ -227,33 +226,43 @@ export class BubbleMode {
     return eye.clone().lerp(glass, (z - eye.z) / (glass.z - eye.z));
   }
 
-  /** Mètres par px d'écran à la profondeur `z`. */
-  private metersPerPx(z: number): number {
-    const [sw, , gap] = this.world.screenMeters;
+  /**
+   * Le volume des bulles dans le reflet : centré sur l'endroit où est la personne, ~4 m de large,
+   * de la hauteur vue à l'écran, et en profondeur autour de son reflet. Fixe ensuite (la pièce).
+   */
+  private makeBox(): void {
     const eye = this.world.camera.position;
-    return (sw / window.innerWidth) * ((eye.z - z) / (eye.z + gap));
+    const body = -eye.z;
+    const top = this.unproject(window.innerWidth / 2, window.innerHeight * 0.06, body).y;
+    const bottom = this.unproject(window.innerWidth / 2, window.innerHeight * 0.95, body).y;
+    this.box.min.set(eye.x - WIDTH / 2, bottom, body - BACK);
+    this.box.max.set(eye.x + WIDTH / 2, top, body + FRONT);
   }
 
-  /** Une bulle naît (grossit doucement) à un endroit libre, loin des doigts et des autres. */
-  private respawn(b: Bubble, now: number, tips: [number, number][], delay: number): void {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    b.r = (R_MIN + Math.random() * (R_MAX - R_MIN)) * W;
-    let best = { x: W / 2, y: H / 2, score: -Infinity };
-    for (let k = 0; k < 12; k++) {
-      const x = b.r + Math.random() * (W - 2 * b.r);
-      const y = H * 0.08 + b.r + Math.random() * (H * 0.84 - 2 * b.r);
+  /** Rayon selon la profondeur : petites derrière, grosses devant. */
+  private radiusAt(z: number): number {
+    const k = (z - this.box.min.z) / (this.box.max.z - this.box.min.z);
+    return (R_BACK + (R_FRONT - R_BACK) * Math.min(1, Math.max(0, k))) * (0.85 + Math.random() * 0.3);
+  }
+
+  /** Une bulle naît (grossit doucement) quelque part dans le volume, loin des doigts et des autres. */
+  private respawn(b: Bubble, now: number, delay: number, avoid: THREE.Vector3[]): void {
+    let best = { p: new THREE.Vector3(), score: -Infinity };
+    for (let k = 0; k < 10; k++) {
+      const p = new THREE.Vector3(
+        THREE.MathUtils.lerp(this.box.min.x, this.box.max.x, Math.random()),
+        THREE.MathUtils.lerp(this.box.min.y, this.box.max.y, Math.random()),
+        THREE.MathUtils.lerp(this.box.min.z, this.box.max.z, Math.random()),
+      );
       let score = Infinity;
-      for (const o of this.bubbles) if (o !== b && !o.poppedAt) score = Math.min(score, Math.hypot(o.x - x, o.y - y) - o.r - b.r);
-      for (const [tx, ty] of tips) score = Math.min(score, Math.hypot(tx - x, ty - y) - b.r - 80);
-      if (score > best.score) best = { x, y, score };
+      for (const o of this.bubbles) if (o !== b && !o.poppedAt) score = Math.min(score, o.pos.distanceTo(p) - o.r);
+      for (const a of avoid) score = Math.min(score, a.distanceTo(p) - 0.15);
+      if (score > best.score) best = { p, score };
     }
-    b.x = best.x;
-    b.y = best.y;
+    b.pos.copy(best.p);
+    b.r = this.radiusAt(b.pos.z);
     const a = Math.random() * Math.PI * 2;
-    b.vx = Math.cos(a) * DRIFT * W * 0.5;
-    b.vy = Math.sin(a) * DRIFT * W * 0.5;
-    b.depth = (Math.random() * 2 - 1) * DEPTH;
+    b.vel.set(Math.cos(a) * DRIFT * 0.5, Math.sin(a) * DRIFT * 0.5, (Math.random() - 0.5) * DRIFT * 0.3);
     b.bornAt = now + delay;
     b.poppedAt = 0;
   }
@@ -268,10 +277,9 @@ export class BubbleMode {
     const tips = this.hands().flatMap((h) => h.tips);
     if (this.needSpawn) {
       this.needSpawn = false;
-      this.bubbles.forEach((b, i) => this.respawn(b, now, tips, i * 120));
+      this.makeBox();
+      this.bubbles.forEach((b, i) => this.respawn(b, now, (i % 10) * 90, []));
     }
-    // Le reflet de la personne : à la distance de son œil, derrière la vitre.
-    const plane = -this.world.camera.position.z;
     for (const b of this.bubbles) {
       const u = b.mesh.material.uniforms;
       if (b.poppedAt) {
@@ -279,9 +287,9 @@ export class BubbleMode {
         u.uPop.value = Math.min(1, k);
         if (k >= 1) {
           u.uAppear.value = 0;
-          this.respawn(b, now, tips, 600 + Math.random() * 1400);
+          this.respawn(b, now, 600 + Math.random() * 1400, [b.pos.clone()]);
         }
-        this.place(b, plane);
+        this.place(b);
         continue;
       }
       if (now < b.bornAt) {
@@ -289,52 +297,40 @@ export class BubbleMode {
         continue;
       }
       // Dérive de vraie bulle : un courant d'air doux et changeant, des courbes lentes.
-      const ax = Math.sin(t * 0.37 + b.phase) + Math.sin(t * 0.83 + b.phase * 1.7) * 0.6;
-      const ay = Math.cos(t * 0.41 + b.phase * 1.3) + Math.sin(t * 0.67 + b.phase * 0.7) * 0.6;
-      b.vx += ax * DRIFT * W * 0.6 * dt;
-      b.vy += ay * DRIFT * W * 0.6 * dt;
+      b.vel.x += (Math.sin(t * 0.37 + b.phase) + 0.6 * Math.sin(t * 0.83 + b.phase * 1.7)) * DRIFT * 0.6 * dt;
+      b.vel.y += (Math.cos(t * 0.41 + b.phase * 1.3) + 0.6 * Math.sin(t * 0.67 + b.phase * 0.7)) * DRIFT * 0.6 * dt;
+      b.vel.z += Math.sin(t * 0.29 + b.phase * 0.5) * DRIFT * 0.25 * dt;
       // Elles s'écartent doucement des voisines.
       for (const o of this.bubbles) {
         if (o === b || o.poppedAt || now < o.bornAt) continue;
-        const dx = b.x - o.x;
-        const dy = b.y - o.y;
-        const d = Math.hypot(dx, dy);
-        const min = b.r + o.r + 10;
-        if (d > 0 && d < min) {
-          b.vx += (dx / d) * (min - d) * 3 * dt;
-          b.vy += (dy / d) * (min - d) * 3 * dt;
-        }
+        const d = b.pos.clone().sub(o.pos);
+        const l = d.length();
+        const min = b.r + o.r + 0.02;
+        if (l > 0 && l < min) b.vel.addScaledVector(d.divideScalar(l), (min - l) * 3 * dt);
       }
-      // Air : vitesse limitée, amortie.
-      const damp = Math.exp(-dt * 0.6);
-      b.vx *= damp;
-      b.vy *= damp;
-      const v = Math.hypot(b.vx, b.vy);
-      const vmax = DRIFT * W;
-      if (v > vmax) {
-        b.vx *= vmax / v;
-        b.vy *= vmax / v;
+      b.vel.multiplyScalar(Math.exp(-dt * 0.6));
+      if (b.vel.length() > DRIFT) b.vel.setLength(DRIFT);
+      b.pos.addScaledVector(b.vel, dt);
+      // Rebonds mous aux limites du volume.
+      for (const a of ["x", "y", "z"] as const) {
+        if (b.pos[a] < this.box.min[a]) b.vel[a] = Math.abs(b.vel[a]) * 0.6;
+        if (b.pos[a] > this.box.max[a]) b.vel[a] = -Math.abs(b.vel[a]) * 0.6;
       }
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      // Rebonds mous sur les bords.
-      const top = H * 0.06;
-      if (b.x < b.r) b.vx = Math.abs(b.vx) * 0.6;
-      if (b.x > W - b.r) b.vx = -Math.abs(b.vx) * 0.6;
-      if (b.y < top + b.r) b.vy = Math.abs(b.vy) * 0.6;
-      if (b.y > H - b.r) b.vy = -Math.abs(b.vy) * 0.6;
-      b.x = Math.min(W - b.r, Math.max(b.r, b.x));
-      b.y = Math.min(H - b.r, Math.max(top + b.r, b.y));
+      b.pos.clamp(this.box.min, this.box.max);
       // Naissance : elle grossit doucement (avec un léger rebond).
       const g = Math.min(1, (now - b.bornAt) / GROW_MS);
       u.uAppear.value = Math.min(1, g * 2);
       u.uPop.value = 0;
-      this.place(b, plane, easeOutBack(g));
+      this.place(b, easeOutBack(g));
       // Un doigt dessus (dans le reflet) : pop.
       if (g > 0.5) {
+        const [cx, cy] = this.world.project(b.pos);
+        if (cx < 0 || cx > 1 || cy < 0 || cy > 1) continue;
+        const [ex] = this.world.project(b.pos.clone().add(new THREE.Vector3(b.r, 0, 0)));
+        const rPx = Math.abs(ex - cx) * W;
         for (const [x, y] of tips) {
-          if (Math.hypot(x - b.x, y - b.y) < b.r * 0.95) {
-            this.pop(b, now, plane);
+          if (Math.hypot(x - cx * W, y - cy * H) < rPx * 0.95) {
+            this.pop(b, now);
             break;
           }
         }
@@ -345,20 +341,18 @@ export class BubbleMode {
     this.updateRings(now);
   }
 
-  /** La bulle en 3D : à sa place à l'écran, à sa profondeur, à sa taille à l'écran. */
-  private place(b: Bubble, plane: number, grow = 1): void {
-    const z = plane + b.depth;
-    b.mesh.position.copy(this.unproject(b.x, b.y, z));
-    b.mesh.scale.setScalar(b.r * this.metersPerPx(z) * 3 * Math.max(0.001, grow));
-    b.mesh.material.uniforms.uSolid.value = Math.max(0.01, -z);
+  /** La bulle en 3D, à sa place dans le reflet. */
+  private place(b: Bubble, grow = 1): void {
+    b.mesh.position.copy(b.pos);
+    b.mesh.scale.setScalar(b.r * 3 * Math.max(0.001, grow));
+    b.mesh.material.uniforms.uSolid.value = Math.max(0.01, -b.pos.z);
   }
 
   /** Pop : éclair, gouttelettes, anneau, son. */
-  private pop(b: Bubble, now: number, plane: number): void {
+  private pop(b: Bubble, now: number): void {
     b.poppedAt = now;
-    const z = plane + b.depth;
-    const center = this.unproject(b.x, b.y, z);
-    const rM = b.r * this.metersPerPx(z);
+    const center = b.pos.clone();
+    const rM = b.r;
     const n = Math.round(24 + rM * 250);
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -371,7 +365,7 @@ export class BubbleMode {
     ring.r = rM;
     ring.mesh.position.copy(center);
     ring.mesh.visible = true;
-    this.popSound(b.r / window.innerWidth);
+    this.popSound(b.r);
   }
 
   private spark(at: THREE.Vector3, vel: THREE.Vector3, size: number, dur: number): void {
@@ -445,7 +439,7 @@ export class BubbleMode {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.type = "sine";
-      const f = 900 * (0.05 / Math.max(0.02, r));
+      const f = 900 * (0.06 / Math.max(0.02, r));
       o.frequency.setValueAtTime(f, t0);
       o.frequency.exponentialRampToValueAtTime(f * 0.35, t0 + 0.09);
       g.gain.setValueAtTime(0.12, t0);
