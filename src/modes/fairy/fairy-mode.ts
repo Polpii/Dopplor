@@ -32,7 +32,7 @@ type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff" |
 /** Rôle dans le menu : ouverture (chemin minuté), attente à côté, choix d'une bulle, fermeture. */
 type Script =
   | { kind: "open"; start: number; points: THREE.Vector3[]; times: number[] }
-  | { kind: "hold"; spot: THREE.Vector3; palm: THREE.Vector3; fold: number; spin: number; size: number }
+  | { kind: "hold"; spot: THREE.Vector3; palm: THREE.Vector3; fold: number; spin: number; size: number; onPalm: boolean }
   | { kind: "select"; start: number; from: THREE.Vector3; target: THREE.Vector3; radius: number; burst: boolean }
   | { kind: "close"; start: number; from: THREE.Vector3; palm: THREE.Vector3; boom: boolean };
 /**
@@ -253,7 +253,7 @@ export class FairyMode {
   }
 
   /** Menu ouvert : à côté des bulles ; poing qui se ferme (`fold` 0–1) : elle se rapproche de la main. */
-  menuHold(beside: THREE.Vector3, palm: THREE.Vector3, fold: number, size: number): void {
+  menuHold(beside: THREE.Vector3, palm: THREE.Vector3, fold: number, size: number, onPalm = false): void {
     const s = this.script;
     // Ouverture en cours (elle la mène déjà à côté), choix ou fermeture : on ne change rien.
     if (s && s.kind !== "hold") return;
@@ -262,7 +262,8 @@ export class FairyMode {
       s.palm.copy(palm);
       s.fold = fold;
       s.size = size;
-    } else this.script = { kind: "hold", spot: beside.clone(), palm: palm.clone(), fold, spin: 0, size };
+      s.onPalm = onPalm;
+    } else this.script = { kind: "hold", spot: beside.clone(), palm: palm.clone(), fold, spin: 0, size, onPalm };
   }
 
   /** Angle du tourbillon en cours (les bulles s'y enroulent dans le même sens). */
@@ -297,7 +298,7 @@ export class FairyMode {
         // pile quand elle éclot.
         const { points: P, times: T } = s;
         if (since >= T[T.length - 1]) {
-          this.script = { kind: "hold", spot: P[P.length - 1].clone(), palm: P[0].clone(), fold: 0, spin: 0, size: 0.4 };
+          this.script = { kind: "hold", spot: P[P.length - 1].clone(), palm: P[0].clone(), fold: 0, spin: 0, size: 0.4, onPalm: false };
           return P[P.length - 1].clone();
         }
         let i = 0;
@@ -308,8 +309,9 @@ export class FairyMode {
       }
       case "hold": {
         if (s.fold <= 0.02) {
-          // À côté du menu, petites boucles.
           s.spin = 0;
+          // Posée sur la main à plat (presque immobile), ou à côté du menu en petites boucles.
+          if (s.onPalm) return s.spot.clone().add(new THREE.Vector3(0, 0.008 * Math.sin(t * 2.2), 0));
           return s.spot.clone().add(new THREE.Vector3(0.025 * Math.cos(t * 2.4), 0.02 * Math.sin(t * 3.1), 0.02 * Math.sin(t * 2.4)));
         }
         // Poing qui se ferme : tourbillon de plus en plus serré et rapide autour de la main.
@@ -429,7 +431,8 @@ export class FairyMode {
 
     // Repos : posée 1 ; en chute, ailes presque arrêtées, qui reprennent en se rattrapant.
     const recovering = this.mood === "recover" ? smooth(Math.min(1, since / RECOVER_MS)) : 1;
-    const restTarget = perched ? 1 : this.mood === "fall" ? 0.6 : this.mood === "recover" ? 0.6 * (1 - recovering) : 0;
+    const onPalm = this.script?.kind === "hold" && this.script.onPalm && this.script.fold <= 0.02;
+    const restTarget = perched || onPalm ? 1 : this.mood === "fall" ? 0.6 : this.mood === "recover" ? 0.6 * (1 - recovering) : 0;
     this.rest += (restTarget - this.rest) * (1 - Math.exp(-dt * (this.mood === "fall" ? 8 : 4)));
     const tumble = this.mood === "fall" ? 1 - since / FALL_MS : this.mood === "recover" ? Math.max(0, 0.4 - since / RECOVER_MS) : 0;
     const arriving = this.mood === "approach" ? smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS)) : 0;

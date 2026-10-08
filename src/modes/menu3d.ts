@@ -397,7 +397,10 @@ export class Menu3D implements MenuStage {
       // Poing qui se ferme : elles se replient dans la vraie main.
       this.palm.lerp(this.unproject(palmPx[0], palmPx[1]), 0.35);
     }
-    if (this.opened) this.fairy.menuHold(this.beside, this.palm, view.fold, this.shoulders);
+    // Main à plat : la fée s'y pose (juste au-dessus de la paume) ; sinon elle attend à côté.
+    const flat = !!(pose && palmPx && this.side && pose.open[this.side]);
+    const spot = flat ? this.unproject(palmPx![0], palmPx![1] - 0.12 * this.shoulderPx) : this.beside;
+    if (this.opened) this.fairy.menuHold(spot, this.palm, view.fold, this.shoulders, flat);
     // Onde de choc.
     if (this.pendingShock && now >= this.pendingShock.when) {
       this.shock(this.pendingShock.at, now);
