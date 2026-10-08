@@ -35,7 +35,7 @@ const LOST_MS = 1500;
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
 /** Soleil bas, un peu à droite de la vue (repère du paysage : x à droite, y en haut, -z au loin). */
-const SUN = new THREE.Vector3(0.62, 0.15, -0.77).normalize();
+const SUN = new THREE.Vector3(0.62, 0.26, -0.74).normalize();
 
 // --- Bruit (simplex 2D) ------------------------------------------------------------------------------
 
@@ -338,14 +338,18 @@ export class PortalMode {
 
   // --- Hauteurs et ombres ----------------------------------------------------------------------------
 
-  private static NX = 420;
+  private static NX = 520;
   private static NZ = 380;
   private static gridD(j: number): number {
     const v = j / PortalMode.NZ;
     return 0.2 + v * v * 3200;
   }
+  /** Demi-largeur du terrain à la distance d : assez large pour qui se penche beaucoup. */
+  private static half(d: number): number {
+    return 30 + d * 1.4;
+  }
   private static gridX(i: number, d: number): number {
-    return (i / PortalMode.NX - 0.5) * 2 * (12 + d * 0.95);
+    return (i / PortalMode.NX - 0.5) * 2 * PortalMode.half(d);
   }
 
   /** Hauteur lue dans la grille (bilinéaire) ; très bas hors de la grille. */
@@ -353,7 +357,7 @@ export class PortalMode {
     const { NX, NZ } = PortalMode;
     if (d < 0.2 || d >= 3200) return -1e9;
     const fj = NZ * Math.sqrt((d - 0.2) / 3200);
-    const fi = (x / (2 * (12 + d * 0.95)) + 0.5) * NX;
+    const fi = (x / (2 * PortalMode.half(d)) + 0.5) * NX;
     if (fi < 0 || fi >= NX) return -1e9;
     const i = Math.floor(fi);
     const j = Math.min(NZ - 1, Math.floor(fj));
@@ -732,9 +736,9 @@ export class PortalMode {
     type Tree = { m: THREE.Matrix4; tint: THREE.Color; shade: number };
     const cones: Tree[] = [];
     const rounds: Tree[] = [];
-    for (let k = 0; k < 160000 && cones.length + rounds.length < 12000; k++) {
+    for (let k = 0; k < 400000 && cones.length + rounds.length < 26000; k++) {
       const d = 80 + this.rnd() * 1620;
-      const x = (this.rnd() - 0.5) * 2 * (50 + d * 0.35);
+      const x = (this.rnd() - 0.5) * 2 * (80 + d * 0.9);
       const h = this.heightAt(x, d);
       if (this.rnd() > forestAt(x, d, h, this.slopeAt(x, d)) * 0.9) continue;
       const sc = 0.7 + this.rnd() * 0.6;
@@ -810,7 +814,7 @@ export class PortalMode {
     blade.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-0.008, 0, 0, 0.008, 0, 0, 0.003, 0.24, 0, -0.003, 0.24, 0, 0, 0.3, 0]), 3));
     blade.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(15).map((_, i) => (i % 3 === 2 ? 1 : 0)), 3));
     blade.setIndex([0, 1, 2, 0, 2, 3, 3, 2, 4]);
-    const N = 22000;
+    const N = 34000;
     const grass = new THREE.InstancedMesh(
       blade,
       new THREE.ShaderMaterial({
@@ -854,7 +858,7 @@ export class PortalMode {
       N,
     );
     for (let i = 0; i < N; i++) {
-      const x = (this.rnd() - 0.5) * 9;
+      const x = (this.rnd() - 0.5) * 14;
       const d = 0.15 + this.rnd() * (edgeD(x) - 0.25);
       const sc = 0.6 + this.rnd() * 0.7;
       grass.setMatrixAt(
@@ -869,12 +873,12 @@ export class PortalMode {
     grass.frustumCulled = false;
     this.add(grass, 2);
     const petals = [new THREE.Color(0.9, 0.9, 0.85), new THREE.Color(0.9, 0.7, 0.1), new THREE.Color(0.45, 0.25, 0.7), new THREE.Color(0.85, 0.35, 0.45)];
-    const F = 700;
+    const F = 1100;
     const flowerGeo = new THREE.IcosahedronGeometry(0.014, 0);
     const flowers = new THREE.InstancedMesh(flowerGeo, this.lit({}), F);
     const tint = new Float32Array(F * 3);
     for (let i = 0; i < F; i++) {
-      const x = (this.rnd() - 0.5) * 9;
+      const x = (this.rnd() - 0.5) * 14;
       const d = 0.2 + this.rnd() * (edgeD(x) - 0.4);
       flowers.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, height(x, d) + 0.08 + this.rnd() * 0.16, -d));
       const c = petals[Math.floor(this.rnd() * petals.length)];
@@ -890,7 +894,7 @@ export class PortalMode {
   private buildMotes(): void {
     const N = 160;
     const mp = new Float32Array(N * 3);
-    for (let i = 0; i < N; i++) mp.set([(this.rnd() - 0.5) * 6, 0.2 + this.rnd() * 2.2, -0.4 - this.rnd() * 5], i * 3);
+    for (let i = 0; i < N; i++) mp.set([(this.rnd() - 0.5) * 9, 0.2 + this.rnd() * 2.2, -0.4 - this.rnd() * 5], i * 3);
     const mg = new THREE.BufferGeometry();
     mg.setAttribute("position", new THREE.BufferAttribute(mp, 3));
     const motes = new THREE.Points(
