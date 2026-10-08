@@ -1,6 +1,7 @@
 import { CalibrationPanel } from "./calibration";
 import { ICONS, Menu, type MenuItem } from "./modes/menu";
 import { DanceMode } from "./modes/dance/dance-mode";
+import { FairyMode } from "./modes/fairy/fairy-mode";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -26,7 +27,7 @@ const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
 const hudMode = $("hud-mode");
 
-const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse" };
+const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse", fairy: "fée" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
 const LEAD_KEY = "dopplor.predictionMs";
@@ -115,19 +116,30 @@ async function main(): Promise<void> {
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
   );
+  // Fée : 3D derrière la vitre, cachée derrière le reflet de la personne (serveur avec profondeur).
+  const fairy = new FairyMode(
+    () => source.occlusion?.() ?? null,
+    (on) => source.setOcclusion?.(on),
+    () => {
+      const c = source.mirror?.()?.calibration;
+      return c ? [c.screen_width / 100, c.screen_height / 100, c.glass_gap / 100] : null;
+    },
+  );
   let skeleton = true;
-  let activity: "signs" | "dance" | null = null;
+  let activity: "signs" | "dance" | "fairy" | null = null;
   const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
   const activeModes = () => [...(skeleton ? ["skeleton"] : []), ...(activity ? [activity] : [])];
   const choose = async (id: string) => {
     if (id === "skeleton") skeleton = !skeleton;
-    else if (id === "signs" || id === "dance") {
+    else if (id === "signs" || id === "dance" || id === "fairy") {
       const next = activity === id ? null : id;
       if (activity === "signs") signs.exit();
       if (activity === "dance") dance.exit();
+      if (activity === "fairy") fairy.exit();
       activity = next;
       if (activity === "signs") await signs.enter();
       if (activity === "dance") dance.enter();
+      if (activity === "fairy") fairy.enter();
     }
     menu.setActive(activeModes());
     updateHud();
@@ -136,6 +148,7 @@ async function main(): Promise<void> {
     { id: "skeleton", label: "Squelette", icon: ICONS.skeleton },
     { id: "signs", label: "Langue des signes", icon: ICONS.hand },
     { id: "dance", label: "Danse", icon: ICONS.dance },
+    { id: "fairy", label: "Fée", icon: ICONS.fairy },
   ];
   const menu = new Menu(
     items,
@@ -145,11 +158,11 @@ async function main(): Promise<void> {
     (id) => void choose(id),
   );
   menu.setActive(activeModes());
-  if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance });
+  if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance, __fairy: fairy });
   // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
   // des rendus et état des modes, aussi dans la version construite.
   const drawTimes: number[] = [];
-  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, menu, drawTimes, source } });
+  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, menu, drawTimes, source } });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -204,6 +217,8 @@ async function main(): Promise<void> {
     return fit;
   };
   const draw = (now: number) => {
+    // La fée a son propre rendu (3D), à chaque rafraîchissement de l'écran.
+    if (fairy.animating) fairy.frame(now);
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
     // squelette est allumé.
     const aligned = source.space?.() === "screen";

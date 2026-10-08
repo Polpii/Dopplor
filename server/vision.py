@@ -12,6 +12,7 @@ import math
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -23,6 +24,7 @@ from mediapipe.tasks import python as mpt
 from mediapipe.tasks.python import vision as mpv
 
 from capture import Frame, Source
+from occlusion import occlusion_map
 from mirror import Mirror
 
 log = logging.getLogger("dopplor.vision")
@@ -338,6 +340,11 @@ class Pipeline:
         self._switch = 0
         #: Enregistrement de diagnostic (commande « trace ») : tout ce qui est calculé, image par image.
         self._trace: dict | None = None
+        #: Mode fée : calculer et envoyer la silhouette du reflet (voir occlusion.py).
+        self.occlusion = False
+        self.on_occlusion: Callable[[dict, bytes], None] | None = None
+        self._occ_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="silhouette")
+        self._occ_busy = False
         #: Instants des étapes de l'image en cours (diagnostic du retard), pendant un enregistrement.
         self._marks: dict[str, float] | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
@@ -579,6 +586,16 @@ class Pipeline:
                 self._depth = None
         return self._depth
 
+    def _send_occlusion(self, depth: np.ndarray, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int]) -> None:
+        try:
+            occ = occlusion_map(self.mirror, depth, pts, xyz, size)
+            if occ is not None and self.on_occlusion:
+                self.on_occlusion(*occ)
+        except Exception:  # noqa: BLE001 - une silhouette ratée ne doit rien arrêter
+            log.exception("silhouette")
+        finally:
+            self._occ_busy = False
+
     def _to_reflection(self, kind: str, frame: Frame, dets: list[Detection]) -> tuple[list[Detection], str]:
         """Si la calibration est active : 3D (profondeur), mise à jour de l'œil, puis projection
         là où l'œil voit le reflet. Sinon, les points restent en coordonnées de l'image."""
@@ -629,6 +646,13 @@ class Pipeline:
             eye_src, eye_raw = "squelette", (lifted[0].xyz[2] + lifted[0].xyz[5]) / 2
         if eye_raw is not None:
             m.update_eye(eye_raw)
+        # Mode fée : la silhouette vue dans le reflet, pour cacher ce qui passe derrière.
+        # À part (~3 ms), pour ne pas retarder la pose ; une image sautée si le calcul précédent
+        # n'est pas fini.
+        if kind == "pose" and self.occlusion and self.on_occlusion and depth is not None and lifted[0] is not None and not self._occ_busy:
+            h_img, w_img = frame.rgb.shape[:2]
+            self._occ_busy = True
+            self._occ_pool.submit(self._send_occlusion, depth, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img))
         out = []
         for d, l in zip(dets, lifted):
             uv = m.project(l.xyz) if l is not None else None

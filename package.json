@@ -11,9 +11,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.0.1"
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "three": "^0.186.1"
   },
   "devDependencies": {
+    "@types/three": "^0.186.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.2"
   }

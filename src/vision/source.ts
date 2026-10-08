@@ -1,6 +1,29 @@
 import type { CalibrationData, MirrorInfo } from "../calibration";
 import type { Detection, TaskKind } from "./protocol";
 
+/** Point 3D dans le repère du miroir (m) : x vers la droite, y vers le bas, z vers le mur. */
+export type Vec3 = [number, number, number];
+
+/**
+ * Le corps tel qu'on le voit dans le reflet (serveur Python avec profondeur) : pour chaque case
+ * d'une grille posée sur l'écran, la distance du reflet derrière la vitre (`scale` m par unité,
+ * 255 = pas de corps). Avec l'œil, l'écran et quelques points du corps (personne réelle, devant
+ * la vitre), de quoi placer de la 3D derrière la vitre et la cacher derrière la personne.
+ */
+export interface Occlusion {
+  grid: Uint8Array;
+  w: number;
+  h: number;
+  scale: number;
+  eye: Vec3;
+  /** Largeur, hauteur de l'écran, écart vitre/dalle (m). */
+  screen: Vec3;
+  body: Record<"chest" | "hips" | "head" | "lw" | "rw" | "ls" | "rs", Vec3>;
+  vis: { lw: boolean; rw: boolean };
+  /** Reçue à (performance.now()). */
+  at: number;
+}
+
 /** "camera" : points dans l'image caméra ; "screen" : déjà calés sur le reflet (écran 0–1). */
 export type Space = "camera" | "screen";
 
@@ -36,6 +59,9 @@ export interface VisionSource {
   /** Où l'œil devrait voir son propre reflet (écran 0–1). */
   eye?(): [number, number] | null;
   setCalibration?(data: Partial<CalibrationData>): void;
+  /** Silhouette du reflet : demander au serveur de l'envoyer (mode fée), et la dernière reçue. */
+  setOcclusion?(on: boolean): void;
+  occlusion?(): Occlusion | null;
   /** Adresse HTTP du serveur Python (stockage des signes), si la source en a un. */
   apiBase?(): string;
 }

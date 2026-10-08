@@ -2,7 +2,7 @@
 // natif sur le GPU ; on reçoit seulement les points, en binaire, par WebSocket.
 import type { CalibrationData, MirrorInfo } from "../calibration";
 import type { Detection, PoseModel, TaskKind } from "./protocol";
-import type { Space, VisionSource } from "./source";
+import type { Occlusion, Space, VisionSource } from "./source";
 
 const POSE_MODELS: PoseModel[] = ["lite", "full", "heavy"];
 
@@ -58,6 +58,8 @@ export class RemoteSource implements VisionSource {
   private mirrorInfo: MirrorInfo | null = null;
   private resultSpace: Space = "camera";
   private eyeOnGlass: [number, number] | null = null;
+  private wantOcclusion = false;
+  private lastOcclusion: Occlusion | null = null;
 
   private constructor(
     private url: string,
@@ -86,6 +88,7 @@ export class RemoteSource implements VisionSource {
             // Reconnexion : on réapplique ce que l'utilisateur avait choisi.
             for (const kind of Object.keys(this.enabled) as TaskKind[]) this.send({ cmd: "enable", kind, on: this.enabled[kind] });
             if (this.wantPreview) this.send({ cmd: "preview", on: true });
+            if (this.wantOcclusion) this.send({ cmd: "occlusion", on: true });
             if (!greeted) {
               greeted = true;
               resolve();
@@ -112,9 +115,14 @@ export class RemoteSource implements VisionSource {
 
   private handleBinary(buffer: ArrayBuffer): void {
     const headerLength = new DataView(buffer).getUint32(0, true);
-    const header = JSON.parse(decoder.decode(new Uint8Array(buffer, 4, headerLength))) as ResultHeader | { type: "preview" };
+    const header = JSON.parse(decoder.decode(new Uint8Array(buffer, 4, headerLength))) as ResultHeader | { type: "preview" } | (Omit<Occlusion, "grid" | "at"> & { type: "occlusion" });
     let offset = 4 + headerLength;
     offset += (4 - (offset % 4)) % 4;
+
+    if (header.type === "occlusion") {
+      if (this.wantOcclusion) this.lastOcclusion = { ...header, grid: new Uint8Array(buffer, offset, header.w * header.h), at: performance.now() };
+      return;
+    }
 
     if (header.type === "preview") {
       if (!this.wantPreview) return;
@@ -200,6 +208,16 @@ export class RemoteSource implements VisionSource {
 
   apiBase(): string {
     return this.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+  }
+
+  setOcclusion(on: boolean): void {
+    this.wantOcclusion = on;
+    if (!on) this.lastOcclusion = null;
+    this.send({ cmd: "occlusion", on });
+  }
+
+  occlusion(): Occlusion | null {
+    return this.lastOcclusion;
   }
 
   setCalibration(data: Partial<CalibrationData>): void {
