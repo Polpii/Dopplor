@@ -1,9 +1,8 @@
 // Le menu dans le reflet : les bulles sont des objets 3D dans l'espace derrière la vitre, en arc
-// autour de la main qui l'ouvre (au-dessus de la paume, à sa profondeur), vues depuis l'œil de
-// la personne. L'arc est attaché au corps, pas à la main : il suit la personne quand elle se
-// déplace (même taille relative que son reflet quand elle s'approche ou recule), mais ne fuit
-// pas sous le doigt qui pointe. La main et le bras qui passent devant les bulles les cachent,
-// comme un vrai objet.
+// autour de la main qui l'ouvre (au-dessus de la paume, à sa profondeur), à l'échelle de la
+// personne, vues depuis son œil. Elles restent là où elles sont nées, dans l'environnement du
+// reflet (comme de vrais objets : la personne peut bouger autour). La main et le bras qui passent
+// devant les cachent. Seul le repli suit la vraie main, pour se refermer dans le poing.
 //
 // Le menu (menu.ts) garde ses gestes et son rythme ; ici, seulement où sont les bulles et de
 // quoi elles ont l'air. La fée accompagne l'ouverture et la fermeture (fairy-mode.ts).
@@ -24,8 +23,6 @@ const BODY_ARC = 0.8;
 const BODY_LIFT = 0.12;
 /** L'arc s'enroule un peu : les bulles des côtés légèrement plus en arrière. */
 const BODY_WRAP = 0.25;
-/** Suivi de la personne (part du chemin par image) : doux, les bulles ne tremblent pas. */
-const FOLLOW = 0.12;
 /** Écart entre deux bulles voisines sur l'arc. */
 const ARC_STEP = (48 * Math.PI) / 180;
 /** Éclosion : la première bulle, puis une toutes les … (ms) — dans le rythme du menu 2D. */
@@ -386,9 +383,9 @@ export class Menu3D implements MenuStage {
     const since = now - view.openedAt;
     const fold = this.opened ? easeIn(view.fold) : 1;
     const closing = this.opened ? 0 : Math.min(1, (now - this.closedAt) / 300);
-    // Les bulles suivent la personne (comme une partie de son reflet).
+    // Les bulles restent à leur place ; la paume (où elles se replient) suit la vraie main.
     const occ = this.occlusion();
-    if (this.opened && occ && now - occ.at < 500) this.layout(occ, FOLLOW);
+    if (this.opened && occ && now - occ.at < 500 && this.side) this.palm.lerp(reflected(this.side === "left" ? occ.body.lp : occ.body.rp), 0.35);
     if (this.opened) this.fairy.menuHold(this.beside, this.palm, view.fold, this.shoulders);
     // Onde de choc.
     if (this.pendingShock && now >= this.pendingShock.when) {

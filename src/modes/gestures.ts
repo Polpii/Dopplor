@@ -130,9 +130,12 @@ const TIGHT_REACH = 1.1; // doigts serrés (poing)
 const OPEN_REACH = 1.6; // doigts déployés
 const FLICK_MS = 300; // du poing à la main ouverte : une ouverture brusque
 const FIST_UP = 0.1; // poing au moins un peu tourné vers le ciel
-const OPEN_UP = 0.3; // main ouverte paume vers le ciel (au moins ~20°)
+// Bras tendu (coude ouvert), la main est vue plus de face : sa paume paraît moins tournée vers
+// le ciel qu'elle ne l'est.
+const OPEN_UP = 0.25; // main ouverte paume vers le ciel (au moins ~15°)
 const WRIST_DROP = 0.05; // le poignet ne descend pas en s'ouvrant (largeurs d'épaules)
-const MAX_HEIGHT = 1.0; // main au-dessus des hanches
+// Jusqu'aux hanches : bras tendu vers le bas, coude ouvert, la main est sous le nombril.
+const MAX_HEIGHT = 1.6;
 /** Orientation de la paume : la plus haute des dernières images (la profondeur est bruitée). */
 const UP_FRAMES = 3;
 
