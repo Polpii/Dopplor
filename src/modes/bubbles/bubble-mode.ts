@@ -227,16 +227,18 @@ export class BubbleMode {
   }
 
   /**
-   * Le volume des bulles dans le reflet : centré sur l'endroit où est la personne, ~4 m de large,
+   * Le volume des bulles dans le reflet : centré sur ce que montre l'écran, ~4 m de large,
    * de la hauteur vue à l'écran, et en profondeur autour de son reflet. Fixe ensuite (la pièce).
    */
   private makeBox(): void {
     const eye = this.world.camera.position;
     const body = -eye.z;
+    // Centré sur ce que montre l'écran (dans un miroir, quelqu'un à droite voit le reflet de gauche).
+    const center = this.unproject(window.innerWidth / 2, window.innerHeight / 2, body).x;
     const top = this.unproject(window.innerWidth / 2, window.innerHeight * 0.06, body).y;
     const bottom = this.unproject(window.innerWidth / 2, window.innerHeight * 0.95, body).y;
-    this.box.min.set(eye.x - WIDTH / 2, bottom, body - BACK);
-    this.box.max.set(eye.x + WIDTH / 2, top, body + FRONT);
+    this.box.min.set(center - WIDTH / 2, bottom, body - BACK);
+    this.box.max.set(center + WIDTH / 2, top, body + FRONT);
   }
 
   /** Rayon selon la profondeur : petites derrière, grosses devant. */
