@@ -29,6 +29,7 @@ uniform vec2 uRes;
 uniform float uScale;
 uniform float uHasOcc;
 uniform vec2 uCell;
+uniform float uBias;
 // r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
   vec2 o = texture2D(uOcc, uv).rg;
