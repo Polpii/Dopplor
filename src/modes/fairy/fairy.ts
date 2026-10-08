@@ -10,7 +10,13 @@ const REST_FLAP_HZ = 1.6;
 
 export class Fairy {
   readonly group = new THREE.Group();
+  /** Lumière (halo, lueur, cœur) : toujours face à l'œil. */
   private body = new THREE.Group();
+  /** Ailes : tournent avec la fée (cap, tangage, roulis) ; on la voit de profil, de dos… */
+  private rig = new THREE.Group();
+  private yaw = 0;
+  private pitch = 0;
+  private roll = 0;
   private halo: THREE.Mesh;
   private core: THREE.Mesh;
   private glow: THREE.Mesh;
@@ -52,10 +58,11 @@ export class Fairy {
       const pivot = new THREE.Group();
       pivot.add(mesh);
       pivot.scale.x = side; // aile gauche : symétrique
-      this.body.add(pivot);
+      this.rig.add(pivot);
       this.wings.push({ pivot, base: 0, side, lift });
     }
-    this.group.add(this.body);
+    this.rig.rotation.order = "YXZ";
+    this.group.add(this.rig, this.body);
 
     // Étincelles : dans le monde (elles restent là où la fée est passée).
     const geo = new THREE.BufferGeometry();
@@ -81,11 +88,19 @@ export class Fairy {
    * Place la fée et anime ailes, lueur et étincelles. `scale` : taille (profondeur) ; `rest` :
    * 0 en vol, 1 posée (ailes lentes et ouvertes, lueur qui respire, presque pas d'étincelles).
    */
-  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number, scale = 1, rest = 0): void {
+  update(position: THREE.Vector3, velocity: THREE.Vector3, t: number, dt: number, scale = 1, rest = 0, tumble = 0): void {
     this.group.position.copy(position);
     this.group.scale.setScalar(scale);
-    // Penche dans le sens où elle vole, comme un insecte.
-    this.body.rotation.z = THREE.MathUtils.clamp(-velocity.x * 0.6, -0.5, 0.5) * (1 - rest);
+    // Orientation : face à sa route (de profil quand elle file sur le côté, de face quand elle
+    // vient vers nous) ; posée, elle regarde vers nous en tournant un peu la tête. Elle penche
+    // dans les virages et pique du nez en accélérant. `tumble` : elle tournoie (chute).
+    const flat = Math.hypot(velocity.x, velocity.z);
+    const look = flat > 0.12 && rest < 0.5 ? Math.atan2(velocity.x, velocity.z) : 0.45 * Math.sin(t * 0.6) * rest;
+    const k = 1 - Math.exp(-dt * (flat > 0.12 ? 6 : 2.5));
+    this.yaw += Math.atan2(Math.sin(look - this.yaw), Math.cos(look - this.yaw)) * k;
+    this.pitch += (THREE.MathUtils.clamp(flat * 0.35, 0, 0.45) * (1 - rest) - this.pitch) * k;
+    this.roll += (THREE.MathUtils.clamp(-velocity.x * 0.6, -0.5, 0.5) * (1 - rest) - this.roll) * k;
+    this.rig.rotation.set(this.pitch + tumble * 0.6 * Math.sin(t * 9), this.yaw, this.roll + tumble * Math.sin(t * 7));
     this.flapPhase += dt * Math.PI * 2 * THREE.MathUtils.lerp(FLAP_HZ, REST_FLAP_HZ, rest);
     const flap = Math.sin(this.flapPhase);
     for (const w of this.wings) {

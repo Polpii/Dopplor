@@ -23,7 +23,7 @@ const DAMPING = 0.75;
 /** Posée : elle suit la main de près. */
 const PERCH_STIFFNESS = 80;
 
-type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff";
+type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff" | "fall" | "recover";
 type Path = "ellipse" | "saddle" | "spiral" | "visit";
 type Side = "left" | "right";
 const PATHS: Path[] = ["ellipse", "saddle", "spiral", "visit"];
@@ -32,12 +32,14 @@ const PATH_SPEED: Record<Path, number> = { ellipse: 1.0, saddle: 0.85, spiral: 1
 /** Passage d'une figure à l'autre (ms). */
 const PATH_BLEND_MS = 1800;
 /**
- * Taille selon la profondeur : plus grande devant la personne (plus près), plus petite derrière,
- * en plus de la perspective (trop faible seule pour qu'on sente qu'elle s'éloigne).
+ * Taille selon la profondeur, en plus de la perspective (qui fait déjà ~1,4 fois plus grand
+ * devant que derrière) : juste un peu, sinon trop grande devant et minuscule derrière.
  */
-const DEPTH_SCALE = 0.9;
-const SCALE_MIN = 0.55;
-const SCALE_MAX = 1.15;
+const DEPTH_SCALE = 0.25;
+const SCALE_MIN = 0.9;
+const SCALE_MAX = 1.0;
+/** Posée sur une main (tout près, devant) : plus petite. */
+const PERCH_SCALE = 0.6;
 /** Devant la personne, elle s'approche moins qu'elle ne s'éloigne derrière (m). */
 const FRONT_DEPTH = 0.45;
 
@@ -60,6 +62,15 @@ const PERCH_HEIGHT = 0.04;
 /** Autre main à plat à moins de ça de la première (m) : elle saute dessus. */
 const HOP_TO_OTHER = 0.25;
 const TAKEOFF_MS = 900;
+/**
+ * Main retirée sous elle (baissée vite, perdue, retournée) : elle tombe (gravité douce, elle
+ * tournoie, ailes presque arrêtées), puis se rattrape et remonte en vol.
+ */
+const FALL_MS = 520;
+const FALL_GRAVITY = 3.2;
+const RECOVER_MS = 900;
+/** Main qui descend plus vite que ça (m/s) : elle n'est plus portée, elle tombe. */
+const DROP_SPEED = 0.45;
 /** Posée (ou en train d'arriver) : sa lumière n'est pas cachée par la main qui la porte (m). */
 const PERCH_BIAS = 0.25;
 
@@ -75,6 +86,10 @@ interface HandInfo {
   palm: THREE.Vector3 | null;
   palmAt: number;
   speed: number;
+  /** Vitesse verticale de la paume (m/s, > 0 vers le haut). */
+  vy: number;
+  /** Poing (elle s'envole d'un bond plutôt que de tomber). */
+  closed: boolean;
 }
 
 export class FairyMode {
@@ -106,11 +121,12 @@ export class FairyMode {
   private nextHop = 0;
   private hopAt = 0;
   private rest = 0;
+  private recoverTo = new THREE.Vector3();
   /** Quand elle a quitté une main pour la dernière fois. */
   private leftHandAt = -Infinity;
   private hands: Record<Side, HandInfo> = {
-    left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
-    right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
+    left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, closed: false },
+    right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, closed: false },
   };
 
   constructor(
@@ -182,20 +198,43 @@ export class FairyMode {
     }
     this.dart.multiplyScalar(Math.exp(-dt * 3));
     if (this.mood === "orbit" || this.mood === "wander") target.add(this.dart);
-    // Ressort vers la cible (raide quand elle est posée ou qu'elle arrive).
-    const k = perched ? PERCH_STIFFNESS : this.mood === "approach" ? THREE.MathUtils.lerp(STIFFNESS, PERCH_STIFFNESS, smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS))) : STIFFNESS;
-    const acc = target.clone().sub(this.pos).multiplyScalar(k).addScaledVector(this.vel, -2 * Math.sqrt(k) * DAMPING);
-    this.vel.addScaledVector(acc, dt);
-    this.pos.addScaledVector(this.vel, dt);
+    const since = now - this.moodSince;
+    if (this.mood === "fall") {
+      // Elle tombe : gravité douce, un peu de frottement de l'air ; puis elle se rattrape.
+      this.vel.y -= FALL_GRAVITY * dt;
+      this.vel.multiplyScalar(Math.exp(-dt * 0.8));
+      this.pos.addScaledVector(this.vel, dt);
+      if (since > FALL_MS) {
+        this.recoverTo.copy(this.pos).add(new THREE.Vector3((Math.random() - 0.5) * 0.2, 0.3, 0));
+        this.setMood("recover", now);
+      }
+    } else {
+      // Ressort vers la cible (raide quand elle est posée ou qu'elle arrive ; mou au début du
+      // rattrapage, le temps que les ailes reprennent).
+      const k = perched
+        ? PERCH_STIFFNESS
+        : this.mood === "approach"
+          ? THREE.MathUtils.lerp(STIFFNESS, PERCH_STIFFNESS, smooth(Math.min(1, since / APPROACH_MS)))
+          : this.mood === "recover"
+            ? THREE.MathUtils.lerp(0.5, STIFFNESS, smooth(Math.min(1, since / RECOVER_MS)))
+            : STIFFNESS;
+      const acc = target.clone().sub(this.pos).multiplyScalar(k).addScaledVector(this.vel, -2 * Math.sqrt(k) * DAMPING);
+      this.vel.addScaledVector(acc, dt);
+      this.pos.addScaledVector(this.vel, dt);
+    }
 
-    this.rest += ((perched ? 1 : 0) - this.rest) * (1 - Math.exp(-dt * 4));
+    // Repos : posée 1 ; en chute, ailes presque arrêtées, qui reprennent en se rattrapant.
+    const recovering = this.mood === "recover" ? smooth(Math.min(1, since / RECOVER_MS)) : 1;
+    const restTarget = perched ? 1 : this.mood === "fall" ? 0.6 : this.mood === "recover" ? 0.6 * (1 - recovering) : 0;
+    this.rest += (restTarget - this.rest) * (1 - Math.exp(-dt * (this.mood === "fall" ? 8 : 4)));
+    const tumble = this.mood === "fall" ? 1 - since / FALL_MS : this.mood === "recover" ? Math.max(0, 0.4 - since / RECOVER_MS) : 0;
     const arriving = this.mood === "approach" ? smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS)) : 0;
     this.world.shared.uBias.value = PERCH_BIAS * Math.max(this.rest, arriving);
     // Vol stationnaire : un léger tremblé vertical (pas posée).
     const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
     const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
-    const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX) * (1 - 0.15 * this.rest);
-    this.fairy.update(shown, this.vel, t, dt, scale, this.rest);
+    const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX) * (1 - (1 - PERCH_SCALE) * this.rest);
+    this.fairy.update(shown, this.vel, t, dt, scale, this.rest, tumble);
     this.world.render();
   }
 
@@ -215,6 +254,7 @@ export class FairyMode {
       const up = info.ups.length ? Math.max(...info.ups) : -1;
       const flat = !!s && present && s.extended >= 3 && s.reach >= FLAT_REACH && up >= FLAT_UP && s.anchored && Math.abs(s.height) < 1.2;
       const holding = !!s && present && !s.closed && up > HOLD_UP && s.anchored && s.height < 1.4;
+      info.closed = !!s && s.closed;
       info.flatSince = flat ? info.flatSince || now : 0;
       info.notFlatSince = holding ? 0 : info.notFlatSince || now;
       if (occ && present) {
@@ -222,12 +262,14 @@ export class FairyMode {
         if (info.palm && occ.at !== info.palmAt) {
           const dt = Math.max(0.01, (occ.at - info.palmAt) / 1000);
           info.speed += (palm.distanceTo(info.palm) / dt - info.speed) * 0.5;
+          info.vy += ((palm.y - info.palm.y) / dt - info.vy) * 0.5;
         }
         if (occ.at !== info.palmAt) info.palm = palm;
         info.palmAt = occ.at;
       } else {
         info.palm = null;
         info.speed = 0;
+        info.vy = 0;
       }
     }
   }
@@ -254,7 +296,8 @@ export class FairyMode {
 
   private target(occ: Occlusion | null, present: boolean, now: number, t: number, dt: number): THREE.Vector3 {
     if (!present || !occ) {
-      if (this.mood === "perched") this.takeoff(now, false);
+      if (this.mood === "perched") this.fall(now);
+      if (this.mood === "fall") return this.pos.clone();
       if (this.mood !== "takeoff" || now - this.moodSince > TAKEOFF_MS) this.setMood("wander", now);
       this.chest = null;
       // Flâne au milieu du miroir, un peu derrière la vitre.
@@ -274,8 +317,12 @@ export class FairyMode {
         const info = this.hands[side];
         const other: Side = side === "left" ? "right" : "left";
         const spot = this.perchSpot(side, now);
-        if (!spot || info.speed > STARTLE_SPEED) return this.takeoff(now, true);
-        if (info.notFlatSince && now - info.notFlatSince > LEAVE_MS) return this.takeoff(now, false);
+        // Main retirée sous elle (descend vite, perdue) : elle tombe. Geste brusque vers le haut
+        // ou de côté : elle s'envole d'un coup. Main fermée : elle s'envole d'un bond. Main
+        // retournée ou baissée doucement : elle tombe aussi.
+        if (!spot || info.vy < -DROP_SPEED) return this.fall(now);
+        if (info.speed > STARTLE_SPEED) return this.takeoff(now, true);
+        if (info.notFlatSince && now - info.notFlatSince > LEAVE_MS) return info.closed ? this.takeoff(now, false) : this.fall(now);
         // L'autre main à plat tout près : elle saute dessus.
         const otherPalm = this.hands[other].palm;
         if (this.flatFor(other, now) > FLAT_MS && otherPalm && otherPalm.distanceTo(info.palm!) < HOP_TO_OTHER) {
@@ -322,6 +369,11 @@ export class FairyMode {
       case "takeoff":
         if (since > TAKEOFF_MS) this.setMood("orbit", now);
         return this.pos.clone().addScaledVector(this.vel, 0.15);
+      case "fall":
+        return this.pos.clone();
+      case "recover":
+        if (since > RECOVER_MS) this.setMood("orbit", now);
+        return this.recoverTo.clone();
       default:
         // Main à plat tenue : elle la remarque (la plus haute des deux si elles le sont toutes les deux).
         for (const side of ["right", "left"] as const) {
@@ -351,7 +403,16 @@ export class FairyMode {
     }
   }
 
-  /** Elle s'envole : doucement (main fermée, retournée, baissée), ou d'un coup (geste brusque). */
+  /** Plus de main sous elle : elle tombe (puis se rattrape, voir frame). */
+  private fall(now: number): THREE.Vector3 {
+    this.vel.set(this.vel.x * 0.3, Math.min(0, this.vel.y), this.vel.z * 0.3);
+    this.perch = null;
+    this.leftHandAt = now;
+    this.setMood("fall", now);
+    return this.pos.clone();
+  }
+
+  /** Elle s'envole : d'un bond (main fermée), ou d'un coup (geste brusque). */
   private takeoff(now: number, startled: boolean): THREE.Vector3 {
     this.vel.addScaledVector(UP, startled ? 1.6 : 0.7).add(new THREE.Vector3((Math.random() - 0.5) * (startled ? 1.2 : 0.4), 0, (Math.random() - 0.5) * 0.4));
     this.fairy?.sparkle(startled ? 45 : 20, startled ? 2.2 : 1.0);

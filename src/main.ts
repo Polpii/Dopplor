@@ -181,6 +181,7 @@ async function main(): Promise<void> {
   let drawnVersion = -1;
   let drawnGhost = -1;
   let drawnSkeleton = false;
+  let uiWasAnimating = false;
   let lastDraw = 0;
   let lastGhost = 0;
   let draws = 0;
@@ -245,7 +246,12 @@ async function main(): Promise<void> {
       if (signs.animating) signs.animate(now);
       if (dance.animating) dance.animate(now);
     }
-    const ui = (menu.animating && due) || (dance.animating && ghostDue);
+    // Une animation du menu ou de la danse vient de finir : encore un rendu, sinon sa dernière
+    // image (onde de validation, lueur…) resterait figée à l'écran quand rien d'autre ne
+    // redessine (squelette éteint, fée sur son propre canevas).
+    const uiAnimating = menu.animating || dance.animating;
+    const ui = (menu.animating && due) || (dance.animating && ghostDue) || (uiWasAnimating && !uiAnimating);
+    uiWasAnimating = uiAnimating;
     const userChanged = skeleton && user.version !== drawnVersion;
     if ((predicting && due) || ui || fading || userChanged || skeleton !== drawnSkeleton || ghost.version !== drawnGhost) {
       lastDraw = now;
