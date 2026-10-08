@@ -83,8 +83,12 @@ class OrbbecCamera(Source):
             log.info("profondeur → couleur : décalage %s mm (géré par le recalage du SDK)", np.round(np.array(trans, dtype=float), 1).tolist())
         self._power_line_50hz()
         self._steady_frame_rate(fps)
-        # Accéléromètre seulement maintenant : son rappel utilise depth_to_color.
+        # Accéléromètre seulement maintenant : son rappel utilise depth_to_color. Lu 1,5 s puis
+        # arrêté : tant qu'il tourne, ce modèle ne sort plus la profondeur qu'à 15 images/s (et la
+        # couleur avec elle, les deux allant par paires) ; la verticale ne change pas, et le sol
+        # vu en profondeur la corrige ensuite.
         self._accel = self._start_accel()
+        self._accel_until = time.monotonic() + 1.5
         self._logged_depth = False
         self.width, self.height = (ci.height, ci.width) if self.rotate in (90, 270) else (ci.width, ci.height)
         self._align = ob.AlignFilter(align_to_stream=ob.OBStreamType.COLOR_STREAM)
@@ -214,43 +218,6 @@ class OrbbecCamera(Source):
         self._ae = {"dev": dev, "exp": float(exp), "gain": float(gain0), "cap": cap, "emin": er.min, "gmin": gr.min, "gmax": gr.max, "at": 0.0, "set": (exp, gain0)}
         log.info("caméra : exposition gérée par Dopplor (pose ≤ %d, soit %.1f ms)", cap, cap / 10)
 
-    def _diag(self, color, t: float, depth=None) -> None:
-        """Diagnostic (toutes les 3 s) : cadence vue par les horodatages de la caméra, réglages
-        relus sur la caméra."""
-        d = getattr(self, "_dg", None)
-        if d is None:
-            d = self._dg = {"at": t, "n": 0, "ts0": None, "ci": [], "di": []}
-        try:
-            d["ci"].append(color.get_index())
-            if depth is not None:
-                d["di"].append(depth.get_index())
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            ts = color.get_timestamp_us()
-        except Exception:  # noqa: BLE001
-            ts = None
-        if d["ts0"] is None:
-            d["ts0"] = ts
-        d["n"] += 1
-        if t - d["at"] < 3:
-            return
-        dev = self.pipe.get_device()
-        P = ob.OBPropertyID
-        try:
-            ae = dev.get_bool_property(P.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL)
-            exp = dev.get_int_property(P.OB_PROP_COLOR_EXPOSURE_INT)
-            gain = dev.get_int_property(P.OB_PROP_COLOR_GAIN_INT)
-        except Exception as e:  # noqa: BLE001
-            ae = exp = gain = f"? ({e})"
-        span = (ts - d["ts0"]) / 1e6 if ts is not None and d["ts0"] is not None else 0
-        ci, di = np.diff(d["ci"]), np.diff(d["di"])
-        am = getattr(self, "_align_ms", [])
-        self._align_ms = []
-        log.info("diag recalage : %d en 3 s, %.1f ms en moyenne, max %.1f ; file %d", len(am), float(np.mean(am)) if am else 0, max(am) if am else 0, self._aligner._work_queue.qsize())
-        log.info("diag caméra : %.1f images/s reçues, %.1f selon la caméra ; auto %s, pose %s, gain %s ; sauts d'index couleur %s profondeur %s", d["n"] / (t - d["at"]), (d["n"] - 1) / span if span > 0 else 0, ae, exp, gain, np.bincount(ci).tolist() if len(ci) else [], np.bincount(di).tolist() if len(di) else [])
-        self._dg = None
-
     def _expose(self, yuyv: np.ndarray, t: float) -> None:
         """Exposition automatique maison (toutes les 0,3 s) : luminosité moyenne visée au centre
         de l'image (là où est la personne) ; plus sombre → temps de pose d'abord (jusqu'à une
@@ -287,16 +254,13 @@ class OrbbecCamera(Source):
             if want[1] != ae["set"][1]:
                 ae["dev"].set_int_property(P.OB_PROP_COLOR_GAIN_INT, want[1])
             ae["set"] = want
-            log.info("caméra : pose %d, gain %d (luminosité %.0f)", want[0], want[1], luma)
         except Exception as e:  # noqa: BLE001
             log.warning("caméra : réglage d'exposition refusé (%s)", e)
             ae["at"] = t + 5
 
     def _depth_of(self, frames) -> np.ndarray | None:
         """Profondeur en mètres, alignée pixel à pixel sur l'image couleur."""
-        t0 = time.perf_counter()
         aligned = self._align.process(frames)
-        self._align_ms = getattr(self, "_align_ms", []) + [(time.perf_counter() - t0) * 1000]
         if not aligned:
             return None
         depth = aligned.as_frame_set().get_depth_frame()
@@ -353,9 +317,12 @@ class OrbbecCamera(Source):
                 continue
             t = time.monotonic()
             wall = time.time() * 1000
+            if self._accel is not None and t > self._accel_until:
+                self._accel.stop()
+                self._accel = None
+                log.info("accéléromètre arrêté (verticale lue) : caméra à pleine cadence")
             yuyv = np.frombuffer(color.get_data(), np.uint8).reshape(color.get_height(), color.get_width(), 2)
             self._expose(yuyv, t)
-            self._diag(color, t, frames.get_depth_frame())
             rgb = cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUY2)
             future: Future = self._aligner.submit(self._depth_of, frames)
             self._publish(rgb, t, wall, lambda f=future: f.result(timeout=0.2))
