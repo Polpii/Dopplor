@@ -146,13 +146,20 @@ async function main(): Promise<void> {
       if (activity === "dance") dance.exit();
       if (activity === "fairy") fairy.exit();
       if (activity === "bubbles") bubbles.exit();
-      if (activity === "portal") portal.exit();
+      if (activity === "portal") {
+        portal.exit();
+        source.setTask?.("face", true);
+      }
       activity = next;
       if (activity === "signs") await signs.enter();
       if (activity === "dance") dance.enter();
       if (activity === "fairy") fairy.enter();
       if (activity === "bubbles") bubbles.enter();
-      if (activity === "portal") portal.enter();
+      if (activity === "portal") {
+        // Le visage ne sert à rien ici : la carte graphique va à la pose (œil plus régulier).
+        source.setTask?.("face", false);
+        portal.enter();
+      }
     }
     menu.setActive(activeModes());
     updateHud();
@@ -205,7 +212,7 @@ async function main(): Promise<void> {
     return out;
   };
   const bubbles = new BubbleMode(world, fingertips);
-  const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null));
+  const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null), () => source.eyeSample?.() ?? null);
   // Le paysage du portail se calcule à l'avance (quelques centaines de ms), pas à l'ouverture.
   setTimeout(() => portal.prepare(), 5000);
   if (source.setOcclusion) menu.stage = menu3d;

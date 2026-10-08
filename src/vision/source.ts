@@ -27,6 +27,13 @@ export interface Occlusion {
   at: number;
 }
 
+/** Mesure brute de l'œil (repère du miroir, m) et heure murale de capture de l'image (ms, même
+ *  horloge que Date.now()). */
+export interface EyeSample {
+  eye: Vec3;
+  wall: number;
+}
+
 /** "camera" : points dans l'image caméra ; "screen" : déjà calés sur le reflet (écran 0–1). */
 export type Space = "camera" | "screen";
 
@@ -68,6 +75,10 @@ export interface VisionSource {
    */
   setOcclusion?(level: number): void;
   occlusion?(): Occlusion | null;
+  /** Dernière mesure brute de l'œil (serveur Python calé sur le reflet). */
+  eyeSample?(): EyeSample | null;
+  /** Active ou coupe un modèle (sans basculer s'il est déjà dans cet état). */
+  setTask?(kind: TaskKind, on: boolean): void;
   /** Adresse HTTP du serveur Python (stockage des signes), si la source en a un. */
   apiBase?(): string;
 }

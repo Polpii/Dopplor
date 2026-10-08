@@ -78,6 +78,9 @@ class Result:
     raw: list[Detection] | None = None
     #: Calé sur le reflet : pour chaque détection, d'où vient sa distance (diagnostic).
     debug: list | None = None
+    #: Pose : l'œil brut de cette image (repère du miroir, m), sans le lissage du squelette ; le
+    #: portail le filtre lui-même, daté à la capture, pour suivre la tête sans retard.
+    eye3: list[float] | None = None
 
 
 @dataclass
@@ -366,6 +369,7 @@ class Pipeline:
         self.on_occlusion: Callable[[dict, bytes], None] | None = None
         self._occ_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="silhouette")
         self._occ_busy = False
+        self._eye3: list[float] | None = None
         #: Centre de chaque paume (repère caméra) et quand il a été mesuré.
         self._palms: dict[str, tuple[float, np.ndarray]] = {}
         #: Instants des étapes de l'image en cours (diagnostic du retard), pendant un enregistrement.
@@ -434,7 +438,8 @@ class Pipeline:
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
         debug = self._debug if space == "screen" else None
         self._mark(f"{kind}:reflet")
-        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None, debug))
+        eye3 = self._eye3 if kind == "pose" and space == "screen" else None
+        self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None, debug, eye3))
         self._mark(f"{kind}:envoyé")
         return dets  # coordonnées image : servent aux zones de zoom
 
@@ -683,6 +688,9 @@ class Pipeline:
             eye_src, eye_raw = "squelette", (lifted[0].xyz[2] + lifted[0].xyz[5]) / 2
         if eye_raw is not None:
             m.update_eye(eye_raw)
+        if kind == "pose":
+            eye_m = m.to_mirror(eye_raw.reshape(1, 3)) if eye_raw is not None else None
+            self._eye3 = None if eye_m is None else [float(v) for v in eye_m[0]]
         # Mode fée : la silhouette vue dans le reflet, pour cacher ce qui passe derrière.
         # À part (~3 ms), pour ne pas retarder la pose ; une image sautée si le calcul précédent
         # n'est pas fini.

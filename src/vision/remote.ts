@@ -2,7 +2,7 @@
 // natif sur le GPU ; on reçoit seulement les points, en binaire, par WebSocket.
 import type { CalibrationData, MirrorInfo } from "../calibration";
 import type { Detection, PoseModel, TaskKind } from "./protocol";
-import type { Occlusion, Space, VisionSource } from "./source";
+import type { EyeSample, Occlusion, Space, VisionSource } from "./source";
 
 const POSE_MODELS: PoseModel[] = ["lite", "full", "heavy"];
 
@@ -36,6 +36,7 @@ interface ResultHeader {
   zoom: boolean;
   space?: Space;
   eye?: [number, number];
+  eye3?: [number, number, number];
   dets: { n: number; key?: string; label?: string; expr?: number[] }[];
   raw?: { n: number; key?: string; label?: string; expr?: number[] }[];
 }
@@ -58,6 +59,7 @@ export class RemoteSource implements VisionSource {
   private mirrorInfo: MirrorInfo | null = null;
   private resultSpace: Space = "camera";
   private eyeOnGlass: [number, number] | null = null;
+  private rawEye: EyeSample | null = null;
   private wantOcclusion = 0;
   private lastOcclusion: Occlusion | null = null;
 
@@ -144,6 +146,7 @@ export class RemoteSource implements VisionSource {
       this.lastWall = header.wall;
       this.resultSpace = header.space ?? "camera";
       this.eyeOnGlass = header.eye ?? null;
+      if (header.eye3) this.rawEye = { eye: header.eye3, wall: header.wall };
     }
     // Daté à l'heure murale de capture : même horloge que Date.now() côté page (mesures de retard).
     if (this.enabled[header.kind]) this.onResult(header.kind, detections, header.wall, raw);
@@ -172,6 +175,14 @@ export class RemoteSource implements VisionSource {
     const delegate = this.stats?.delegates[kind] ?? this.hello.delegates[kind];
     const mode = kind === "pose" ? `${this.poseModel} · ` : s?.zoom ? "zoom · " : "plein cadre · ";
     return s ? `${mode}${delegate} · ${Math.round(s.fps)} fps · ${s.infer.toFixed(1)} ms` : `${mode}${delegate}`;
+  }
+
+  eyeSample(): EyeSample | null {
+    return this.rawEye;
+  }
+
+  setTask(kind: TaskKind, on: boolean): void {
+    if (this.enabled[kind] !== on) this.toggle(kind);
   }
 
   toggle(kind: TaskKind): boolean {

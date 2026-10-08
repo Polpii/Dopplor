@@ -18,6 +18,7 @@
 import * as THREE from "three";
 import { Fairy } from "../fairy/fairy";
 import type { MirrorWorld } from "../fairy/world";
+import type { EyeSample } from "../../vision/source";
 
 /** Arche : part de l'écran qu'elle occupe (largeur, hauteur), centre (fraction de la hauteur). */
 const PORTAL_W = 0.96;
@@ -35,7 +36,13 @@ const LOST_MS = 1500;
 /** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
  *  le délai caméra → calcul → image. */
 const EYE_STALE_MS = 700;
-const PREDICT_S = 0.08;
+/** Filtre de l'œil (alpha-bêta) : part de l'écart corrigée à chaque mesure, sur la position et la
+ *  vitesse. Délai écran (rendu + affichage, s) ajouté à l'âge de la mesure pour viser l'instant où
+ *  l'image sera vue ; anticipation plafonnée. */
+const EYE_ALPHA = 0.5;
+const EYE_BETA = 0.12;
+const DISPLAY_S = 0.025;
+const MAX_LEAD_S = 0.16;
 /** Vallée en contrebas du bord de la prairie (m), niveau de l'eau. */
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
@@ -281,14 +288,17 @@ export class PortalMode {
   // Point de vue rendu : lissé, anticipé.
   private view = new THREE.Vector3();
   private viewInit = false;
-  private eyeVel = new THREE.Vector3();
-  private lastEye = new THREE.Vector3();
-  private eyeStamp = 0;
+  // Filtre de l'œil : position et vitesse (repère Three), heure de capture de la dernière mesure.
+  private eyeX = new THREE.Vector3();
+  private eyeV = new THREE.Vector3();
+  private eyeWall = 0;
+  private eyeOk = false;
   private birds: { mesh: THREE.InstancedMesh; offsets: THREE.Vector3[] } | null = null;
 
   constructor(
     private world: MirrorWorld,
     private present: () => boolean = () => false,
+    private sample: () => EyeSample | null = () => null,
   ) {
     this.root.visible = false;
     world.scene.add(this.root);
@@ -317,7 +327,7 @@ export class PortalMode {
     this.world.far = FAR;
     this.world.setResolution(1); // 4K : le paysage est la vedette
     this.viewInit = false;
-    this.eyeVel.set(0, 0, 0);
+    this.eyeOk = false;
     this.world.viewEye = () => (this.viewInit ? this.view : this.neutralEye());
   }
 
@@ -358,16 +368,45 @@ export class PortalMode {
     this.root.visible = true;
   }
 
+  /** Nouvelle mesure brute de l'œil ? On recale position et vitesse (filtre alpha-bêta, daté à la
+   *  capture : les mesures irrégulières ou en retard sont prises à leur vrai instant). */
+  private feedEye(): void {
+    const s = this.sample();
+    if (!s || s.wall === this.eyeWall) return;
+    const z = new THREE.Vector3(s.eye[0], -s.eye[1], -s.eye[2]);
+    const dt = (s.wall - this.eyeWall) / 1000;
+    if (!this.eyeOk || dt <= 0 || dt > 0.3 || z.distanceTo(this.eyeX) > 0.6) {
+      this.eyeX.copy(z);
+      this.eyeV.set(0, 0, 0);
+      this.eyeOk = true;
+    } else {
+      const pred = this.eyeX.clone().addScaledVector(this.eyeV, dt);
+      const r = z.sub(pred);
+      this.eyeX.copy(pred).addScaledVector(r, EYE_ALPHA);
+      this.eyeV.addScaledVector(r, EYE_BETA / dt);
+      if (this.eyeV.length() > 2.5) this.eyeV.setLength(2.5);
+    }
+    this.eyeWall = s.wall;
+  }
+
+  /** Où est l'œil à l'instant où l'image sera vue (dernière estimation prolongée par la vitesse). */
+  private eyeNow(): THREE.Vector3 | null {
+    if (!this.eyeOk) return null;
+    const age = (Date.now() - this.eyeWall) / 1000 + DISPLAY_S;
+    if (age > EYE_STALE_MS / 1000) return this.eyeX.clone();
+    return this.eyeX.clone().addScaledVector(this.eyeV, Math.min(age, MAX_LEAD_S));
+  }
+
   /**
    * Suivi du regard : attend qu'une personne soit stable devant l'arche, puis la suit ; revient au
-   * centre quand il n'y a plus personne (plus de mesure de l'œil). Anticipe un peu le mouvement de
-   * la tête (le délai caméra → calcul → image) et lisse les grands sauts (quelqu'un qui apparaît
-   * d'un coup) : petits mouvements presque sans retard, grands déplacements en douceur.
+   * centre quand il n'y a plus personne (plus de mesure de l'œil). La tête est suivie sans retard
+   * (filtre daté à la capture, anticipé jusqu'à l'affichage) ; seuls les grands sauts (quelqu'un
+   * qui apparaît d'un coup) sont adoucis.
    */
   private updateFollow(now: number, dt: number): void {
-    const eye = this.world.trackedEye;
-    const stamp = this.world.eyeTime;
-    const fresh = eye !== null && now - stamp < EYE_STALE_MS;
+    this.feedEye();
+    const fresh = this.eyeOk && Date.now() - this.eyeWall < EYE_STALE_MS;
+    const eye = this.eyeNow();
     if (fresh && eye && this.present()) {
       this.seenAt = now;
       if (eye.distanceTo(this.anchor) > STABLE_RADIUS) {
@@ -375,31 +414,20 @@ export class PortalMode {
         this.anchorSince = now;
       }
       if (now - this.anchorSince > STABLE_MS) this.locked = true;
-      if (stamp !== this.eyeStamp) {
-        const dte = (stamp - this.eyeStamp) / 1000;
-        if (this.eyeStamp > 0 && dte > 0.005 && dte < 0.2) {
-          const v = eye.clone().sub(this.lastEye).divideScalar(dte);
-          if (v.length() > 2) v.setLength(2);
-          this.eyeVel.lerp(v, 0.4);
-        } else this.eyeVel.set(0, 0, 0);
-        this.lastEye.copy(eye);
-        this.eyeStamp = stamp;
-      }
-    } else this.eyeVel.multiplyScalar(Math.exp(-dt / 0.1));
+    }
     if (now - this.seenAt > LOST_MS) this.locked = false;
     this.follow += ((this.locked ? 1 : 0) - this.follow) * (1 - Math.exp(-dt / 0.8));
     const k = this.follow * this.follow * (3 - 2 * this.follow);
     const target = this.neutralEye();
-    if (eye) target.lerp(eye.clone().addScaledVector(this.eyeVel, PREDICT_S), k);
+    if (eye) target.lerp(eye, k);
     if (!this.viewInit) {
       this.view.copy(target);
       this.viewInit = true;
     }
     const gap = this.view.distanceTo(target);
-    const tau = 0.03 + 0.5 * smoothstep(0.06, 0.5, gap);
-    const step = target.sub(this.view).multiplyScalar(1 - Math.exp(-dt / tau));
-    if (gap > 0.06 && step.length() > 1.6 * dt) step.setLength(1.6 * dt);
-    this.view.add(step);
+    const tau = 0.3 * smoothstep(0.12, 0.45, gap);
+    if (tau < 0.004) this.view.copy(target);
+    else this.view.add(target.sub(this.view).multiplyScalar(1 - Math.exp(-dt / tau)));
   }
 
   frame(now: number): void {

@@ -59,6 +59,8 @@ def result_message(r: Result) -> bytes:
     }
     if r.eye is not None:
         header["eye"] = [round(v, 4) for v in r.eye]
+    if r.eye3 is not None:
+        header["eye3"] = [round(v, 4) for v in r.eye3]
     if r.debug:
         header["dbg"] = r.debug
     raw = r.raw or []
