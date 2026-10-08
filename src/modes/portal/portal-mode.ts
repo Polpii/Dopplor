@@ -32,6 +32,10 @@ const LEDGE_BELOW_EYE = 1.6;
 const STABLE_RADIUS = 0.06;
 const STABLE_MS = 900;
 const LOST_MS = 1500;
+/** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
+ *  le délai caméra → calcul → image. */
+const EYE_STALE_MS = 700;
+const PREDICT_S = 0.08;
 /** Vallée en contrebas du bord de la prairie (m), niveau de l'eau. */
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
@@ -115,21 +119,26 @@ const smoothstep = (a: number, b: number, x: number) => {
 
 // --- Le paysage : x à droite, d en s'éloignant (m), hauteur 0 = la prairie ---------------------------
 
-const CASTLE = { x: 70, d: 820 };
-const LAKE = { x: -55, d: 470, r: 120 };
+const CASTLE = { x: 55, d: 760 };
+const LAKE = { x: -55, d: 500, r: 130 };
 /** Rivière : serpente dans la vallée, passe par le lac. */
-const riverX = (d: number) => 35 * Math.sin(d * 0.005) + 15 * Math.sin(d * 0.013 + 1.3) - 78;
+const riverX = (d: number) => 35 * Math.sin(d * 0.005) + 15 * Math.sin(d * 0.013 + 1.3) - 55;
 /** Grand pic enneigé au fond ; cascade (sur la rivière) qui tombe d'un plateau derrière le lac ;
  *  village au bord de la rivière. */
 const PEAK = { x: 220, d: 2700, r: 300 };
-const FALLS = { x: riverX(985), d: 985, h: 150 };
-const VILLAGE = { x: 10, d: 335, r: 55 };
+const FALLS = { x: riverX(640), d: 640, h: 120 };
+/** Seconde cascade, à droite (on la découvre en se penchant). */
+const FALLS2_X = 165;
+/** Bord du plateau (distance, m) : irrégulier, sauf là où tombe la grande cascade. */
+const plateauEdge = (x: number) => FALLS.d + 45 * noise(x * 0.012, 7.7) * smoothstep(25, 70, Math.abs(x - FALLS.x));
+const VILLAGE = { x: 45, d: 330, r: 55 };
 /** Lune : direction (un peu à gauche, basse sur l'horizon). */
 const MOON = new THREE.Vector3(-0.17, 0.2, -0.97).normalize();
 /** Dragon-serpent : nombre d'anneaux, écart entre anneaux (s de trajet), rayon (m). */
-const DRAGON_RINGS = 120;
-const DRAGON_LAG = 0.12;
-const DRAGON_R = 9;
+const DRAGON_RINGS = 140;
+const DRAGON_SEG = 14;
+const DRAGON_LAG = 0.1;
+const DRAGON_R = 8;
 /** Bord de la falaise (distance à l'arche, m), irrégulier. */
 const edgeD = (x: number) => 2.6 + 0.6 * noise(x * 0.35, 4.2) + 0.3 * noise(x * 1.3, 9.1);
 
@@ -138,8 +147,6 @@ function height(x: number, d: number): number {
   let h = VALLEY + fbm(x * 0.0025, d * 0.0025, 5) * 22 + fbm(x * 0.011, d * 0.011, 3) * 5;
   // Flancs de la vallée.
   h += smoothstep(120, 650, Math.abs(x - cx)) * smoothstep(80, 400, d) * (50 + 90 * (fbm(x * 0.004 + 5, d * 0.004, 4) + 0.5));
-  // Colline du château.
-  h += smoothstep(170, 40, Math.hypot(x - CASTLE.x, d - CASTLE.d)) * 65;
   // Rivière et lac creusés sous le niveau de l'eau.
   h = Math.min(h, THREE.MathUtils.lerp(WATER - 2, h, smoothstep(8, 22, Math.abs(x - cx))));
   const lake = Math.hypot((x - LAKE.x) * 0.75, d - LAKE.d);
@@ -150,15 +157,16 @@ function height(x: number, d: number): number {
   const pk = Math.hypot(x - PEAK.x, (d - PEAK.d) * 0.8);
   if (pk < PEAK.r * 3) h += Math.exp(-((pk / PEAK.r) ** 2)) * (560 + 90 * ridged(x * 0.004, d * 0.004, 4));
   // Plateau et sa falaise ; la rivière l'entaille là où tombe la cascade.
-  const fd = FALLS.d + 45 * noise(x * 0.012, 7.7) * smoothstep(25, 70, Math.abs(x - FALLS.x));
-  const plateau = smoothstep(fd - 25, fd + 8, d) * smoothstep(-360, -280, x) * (1 - smoothstep(0, 80, x));
+  const fd = plateauEdge(x);
+  const plateau = smoothstep(fd - 25, fd + 8, d) * smoothstep(-320, -240, x) * (1 - smoothstep(190, 260, x));
   if (plateau > 0) {
-    const top = VALLEY + FALLS.h + fbm(x * 0.01, d * 0.01, 3) * 12 - (1 - smoothstep(9, 20, Math.abs(x - FALLS.x))) * 7;
+    const notch = (1 - smoothstep(18, 34, Math.abs(x - FALLS.x))) * 6 + (1 - smoothstep(8, 16, Math.abs(x - FALLS2_X))) * 4;
+    const top = VALLEY + FALLS.h + fbm(x * 0.01, d * 0.01, 3) * 10 - notch;
     h = Math.max(h, THREE.MathUtils.lerp(h, top, plateau));
   }
-  // Vasque au pied de la cascade.
-  const pool = Math.hypot(x - FALLS.x, d - (FALLS.d - 50));
-  h = Math.min(h, THREE.MathUtils.lerp(WATER - 3, h, smoothstep(28, 45, pool)));
+  // Vasque au pied de la seconde cascade (la grande tombe dans le lac).
+  const pool = Math.hypot(x - FALLS2_X, d - (plateauEdge(FALLS2_X) - 48));
+  h = Math.min(h, THREE.MathUtils.lerp(WATER - 3, h, smoothstep(22, 36, pool)));
   // La prairie au premier plan, puis la falaise.
   const e = edgeD(x);
   return THREE.MathUtils.lerp(h, fbm(x * 0.4, d * 0.4, 2) * 0.12, smoothstep(e + 1.4, e, d));
@@ -258,7 +266,22 @@ export class PortalMode {
   private lastFrame = 0;
   private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
   private boats: THREE.Group[] = [];
-  private dragon: { rings: THREE.InstancedMesh; mane: THREE.Points; head: THREE.Group } | null = null;
+  private dragon: {
+    body: THREE.BufferGeometry;
+    mane: THREE.Points;
+    head: THREE.Group;
+    jaw: THREE.Object3D;
+    legs: { group: THREE.Group; ring: number; side: number }[];
+    tuft: THREE.Vector3[];
+    crown: THREE.Vector3[];
+  } | null = null;
+  private flags: THREE.Object3D[] = [];
+  // Point de vue rendu : lissé, anticipé.
+  private view = new THREE.Vector3();
+  private viewInit = false;
+  private eyeVel = new THREE.Vector3();
+  private lastEye = new THREE.Vector3();
+  private eyeStamp = 0;
   private birds: { mesh: THREE.InstancedMesh; offsets: THREE.Vector3[] } | null = null;
 
   constructor(
@@ -291,7 +314,9 @@ export class PortalMode {
     this.anchor.set(1e9, 0, 0);
     this.world.far = FAR;
     this.world.setResolution(1); // 4K : le paysage est la vedette
-    this.world.viewEye = (eye) => this.neutralEye().lerp(eye, this.follow * this.follow * (3 - 2 * this.follow));
+    this.viewInit = false;
+    this.eyeVel.set(0, 0, 0);
+    this.world.viewEye = () => (this.viewInit ? this.view : this.neutralEye());
   }
 
   exit(): void {
@@ -331,19 +356,48 @@ export class PortalMode {
     this.root.visible = true;
   }
 
-  /** Suivi du regard : attend qu'une personne soit stable devant l'arche, puis la suit. */
+  /**
+   * Suivi du regard : attend qu'une personne soit stable devant l'arche, puis la suit ; revient au
+   * centre quand il n'y a plus personne (plus de mesure de l'œil). Anticipe un peu le mouvement de
+   * la tête (le délai caméra → calcul → image) et lisse les grands sauts (quelqu'un qui apparaît
+   * d'un coup) : petits mouvements presque sans retard, grands déplacements en douceur.
+   */
   private updateFollow(now: number, dt: number): void {
     const eye = this.world.trackedEye;
-    if (this.present() && eye) {
+    const stamp = this.world.eyeTime;
+    const fresh = eye !== null && now - stamp < EYE_STALE_MS;
+    if (fresh && eye && this.present()) {
       this.seenAt = now;
       if (eye.distanceTo(this.anchor) > STABLE_RADIUS) {
         this.anchor.copy(eye);
         this.anchorSince = now;
       }
       if (now - this.anchorSince > STABLE_MS) this.locked = true;
-    }
+      if (stamp !== this.eyeStamp) {
+        const dte = (stamp - this.eyeStamp) / 1000;
+        if (this.eyeStamp > 0 && dte > 0.005 && dte < 0.2) {
+          const v = eye.clone().sub(this.lastEye).divideScalar(dte);
+          if (v.length() > 2) v.setLength(2);
+          this.eyeVel.lerp(v, 0.4);
+        } else this.eyeVel.set(0, 0, 0);
+        this.lastEye.copy(eye);
+        this.eyeStamp = stamp;
+      }
+    } else this.eyeVel.multiplyScalar(Math.exp(-dt / 0.1));
     if (now - this.seenAt > LOST_MS) this.locked = false;
-    this.follow += ((this.locked ? 1 : 0) - this.follow) * (1 - Math.exp(-dt / 0.6));
+    this.follow += ((this.locked ? 1 : 0) - this.follow) * (1 - Math.exp(-dt / 0.8));
+    const k = this.follow * this.follow * (3 - 2 * this.follow);
+    const target = this.neutralEye();
+    if (eye) target.lerp(eye.clone().addScaledVector(this.eyeVel, PREDICT_S), k);
+    if (!this.viewInit) {
+      this.view.copy(target);
+      this.viewInit = true;
+    }
+    const gap = this.view.distanceTo(target);
+    const tau = 0.03 + 0.5 * smoothstep(0.06, 0.5, gap);
+    const step = target.sub(this.view).multiplyScalar(1 - Math.exp(-dt / tau));
+    if (gap > 0.06 && step.length() > 1.6 * dt) step.setLength(1.6 * dt);
+    this.view.add(step);
   }
 
   frame(now: number): void {
@@ -355,6 +409,7 @@ export class PortalMode {
     const dt = Math.min(0.1, Math.max(0, (now - this.lastFrame) / 1000));
     this.lastFrame = now;
     this.updateFollow(now, dt);
+    this.world.refreshCamera();
     this.time.value = now / 1000;
     const open = Math.min(1, (now - this.openedAt) / OPEN_MS);
     const e = 1 - (1 - open) ** 3;
@@ -829,38 +884,94 @@ export class PortalMode {
     }
   }
 
-  /** Le château sur sa colline : donjon, tours aux toits d'ardoise, remparts, fenêtres allumées. */
+  /** Le château, façon royaume de légende, au bord du plateau : remparts crénelés, tours rondes
+   *  aux toits bleu-vert, donjon à étages, grande tour et sa flèche, drapeaux, fenêtres allumées. */
   private buildCastle(): void {
-    const h0 = height(CASTLE.x, CASTLE.d);
-    const shade = this.sunlight(CASTLE.x, CASTLE.d, h0 + 25);
+    const h0 = this.heightAt(CASTLE.x, CASTLE.d);
+    const shade = Math.max(0.4, this.sunlight(CASTLE.x, CASTLE.d, h0 + 30));
     const castle = new THREE.Group();
-    const stone = this.lit({ color: new THREE.Color(0.4, 0.38, 0.34), shade });
-    const roof = this.lit({ color: new THREE.Color(0.05, 0.07, 0.11), shade });
+    const stone = this.lit({ color: new THREE.Color(0.62, 0.57, 0.48), shade });
+    const trim = this.lit({ color: new THREE.Color(0.38, 0.34, 0.29), shade });
+    const roof = this.lit({ color: new THREE.Color(0.04, 0.18, 0.3), shade });
+    const dark = this.lit({ color: new THREE.Color(0.04, 0.035, 0.03), shade });
     const glow = this.lit({ color: new THREE.Color(0, 0, 0), emissive: new THREE.Color(1.6, 0.95, 0.4), shade });
-    const tower = (x: number, z: number, r: number, h: number) => {
-      const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.08, h, 16), stone);
-      t.position.set(x, h / 2, z);
-      const c = new THREE.Mesh(new THREE.ConeGeometry(r * 1.3, r * 2.8, 16), roof);
-      c.position.set(x, h + r * 1.4, z);
-      castle.add(t, c);
-      for (let k = 0; k < 4; k++) {
-        const w = new THREE.Mesh(new THREE.BoxGeometry(r * 0.22, r * 0.45, 0.3), glow);
-        const a = k * 1.7 + 0.4;
-        w.position.set(x + Math.sin(a) * r * 1.01, h * (0.45 + 0.12 * k), z + Math.cos(a) * r * 1.01);
-        w.lookAt(x, w.position.y, z);
-        castle.add(w);
+    const cloth = this.lit({ color: new THREE.Color(0.5, 0.05, 0.04), shade });
+    cloth.side = THREE.DoubleSide;
+    const put = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, ry = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.rotation.y = ry;
+      castle.add(m);
+      return m;
+    };
+    const flag = (x: number, y: number, z: number) => {
+      put(new THREE.CylinderGeometry(0.18, 0.18, 7, 6), trim, x, y + 3.5, z);
+      const pivot = new THREE.Group();
+      pivot.position.set(x, y + 6, z);
+      pivot.add(new THREE.Mesh(new THREE.PlaneGeometry(5, 2.6).translate(2.5, 0, 0), cloth));
+      castle.add(pivot);
+      this.flags.push(pivot);
+    };
+    const tower = (x: number, z: number, r: number, h: number, roofH = r * 3, withFlag = false) => {
+      put(new THREE.CylinderGeometry(r, r * 1.06, h, 20), stone, x, h / 2, z);
+      put(new THREE.CylinderGeometry(r * 1.2, r * 1.2, 1.8, 20), trim, x, h - 0.9, z);
+      put(new THREE.ConeGeometry(r * 1.34, roofH, 20), roof, x, h + roofH / 2 - 0.2, z);
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + 0.3;
+        put(new THREE.BoxGeometry(r * 0.2, r * 0.45, 0.5), glow, x + Math.sin(a) * r * 1.01, h * (0.45 + 0.4 * ((k * 0.37) % 1)), z + Math.cos(a) * r * 1.01, a);
+      }
+      if (withFlag) flag(x, h + roofH - 0.5, z);
+    };
+    const wall = (ax: number, az: number, bx: number, bz: number, h: number) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const ry = Math.atan2(bx - ax, bz - az);
+      put(new THREE.BoxGeometry(3, h, len), stone, (ax + bx) / 2, h / 2, (az + bz) / 2, ry);
+      // Créneaux.
+      for (let s = 1.5; s < len - 1; s += 2.6) {
+        const f = s / len;
+        put(new THREE.BoxGeometry(3.3, 1.8, 1.3), trim, ax + (bx - ax) * f, h + 0.9, az + (bz - az) * f, ry);
       }
     };
-    tower(0, 0, 10, 55);
-    tower(0, 0, 3.5, 95);
-    for (const [x, z] of [[-26, -18], [26, -18], [-26, 18], [26, 18], [0, 30]]) tower(x, z, 5.5, 40);
-    for (const [x, z, w, d] of [[0, -18, 52, 3], [0, 18, 52, 3], [-26, 0, 3, 36], [26, 0, 3, 36]] as const) {
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 20, d), stone);
-      wall.position.set(x, 10, z);
-      castle.add(wall);
+    // Enceinte : huit tours sur une ellipse, reliées par des remparts.
+    const ring: [number, number][] = [];
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2 + Math.PI / 8;
+      ring.push([Math.sin(a) * 50, Math.cos(a) * 38]);
     }
-    castle.position.set(CASTLE.x, h0 - 2, -CASTLE.d);
-    castle.rotation.y = -0.3;
+    ring.forEach(([x, z], k) => {
+      const [nx, nz] = ring[(k + 1) % 8];
+      wall(x, z, nx, nz, 20);
+      tower(x, z, 5 + (k % 3) * 0.6, 30 + ((k * 7) % 4) * 3, undefined, k % 2 === 0);
+    });
+    // Porte, face à nous, entre deux tours.
+    tower(-8, 40, 4, 27);
+    tower(8, 40, 4, 27);
+    put(new THREE.BoxGeometry(9, 13, 2), dark, 0, 6.5, 40.5);
+    // Donjon à deux étages, toit en pavillon, tourelles d'angle.
+    put(new THREE.BoxGeometry(38, 34, 30), stone, 0, 17, -2);
+    put(new THREE.BoxGeometry(39, 1.8, 31), trim, 0, 34, -2);
+    put(new THREE.BoxGeometry(27, 16, 22), stone, 0, 42, -4);
+    put(new THREE.ConeGeometry(20, 13, 4).rotateY(Math.PI / 4).scale(1, 1, 0.82), roof, 0, 56.5, -4);
+    for (const [x, z] of [[-19, 13], [19, 13], [-19, -17], [19, -17]]) tower(x, z, 3, 44, 9);
+    for (let row = 0; row < 3; row++) {
+      for (let c = -3; c <= 3; c++) put(new THREE.BoxGeometry(1.6, 3, 0.5), glow, c * 4.6, 8 + row * 9, 13.1);
+    }
+    // Grande tour centrale et sa flèche.
+    put(new THREE.CylinderGeometry(6.5, 7, 80, 24), stone, 0, 40, -8);
+    put(new THREE.TorusGeometry(7.6, 0.8, 8, 28).rotateX(Math.PI / 2), trim, 0, 62, -8);
+    put(new THREE.CylinderGeometry(4.6, 5, 14, 20), stone, 0, 87, -8);
+    put(new THREE.CylinderGeometry(5.6, 5.6, 1.6, 20), trim, 0, 93.5, -8);
+    put(new THREE.ConeGeometry(6.2, 26, 20), roof, 0, 107, -8);
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      put(new THREE.BoxGeometry(1.2, 3.2, 0.5), glow, Math.sin(a) * 6.6, 50 + (k % 3) * 8, -8 + Math.cos(a) * 6.6, a);
+    }
+    flag(0, 119, -8);
+    // Grande tour secondaire.
+    tower(-27, -12, 5, 60, 16, true);
+    castle.scale.setScalar(0.72);
+    castle.position.set(CASTLE.x, h0 - 1, -CASTLE.d);
+    castle.rotation.y = -0.15;
     this.add(castle, 1);
   }
 
@@ -1061,14 +1172,15 @@ export class PortalMode {
     return pts;
   }
 
-  /** La cascade : une nappe d'eau qui file le long de la falaise, de la brume à son pied. */
-  private buildFalls(): void {
-    const top = height(FALLS.x, FALLS.d + 6);
+  /** Une cascade : une nappe d'eau qui file le long de la falaise du plateau, de la brume à son pied. */
+  private buildFall(x: number, width: number, mistScale: number): void {
+    const edge = plateauEdge(x);
+    const top = height(x, edge + 6);
     const bottom = WATER;
-    const run = 34;
+    const run = 36;
     const len = Math.hypot(top - bottom, run);
     const sheet = new THREE.Mesh(
-      new THREE.PlaneGeometry(20, len, 1, 1),
+      new THREE.PlaneGeometry(width, len, 1, 1),
       new THREE.ShaderMaterial({
         uniforms: this.uniforms,
         vertexShader: /* glsl */ `
@@ -1087,13 +1199,18 @@ export class PortalMode {
           varying vec2 vUv;
           void main() {
             float x = abs(vUv.x * 2.0 - 1.0);
-            float lane = hash12(vec2(floor(vUv.x * 26.0), 3.0));
-            float flow = vnoise(vec2(vUv.x * 26.0, vUv.y * 9.0 + uTime * (2.2 + lane)));
-            float streak = smoothstep(0.35, 0.9, flow);
-            float edge = 1.0 - smoothstep(0.55, 1.0, x + 0.25 * vnoise(vec2(vUv.y * 12.0 - uTime * 3.0, 1.0)));
-            vec3 water = mix(vec3(0.35, 0.45, 0.5), vec3(1.0, 0.98, 0.95), streak);
-            vec3 c = water * (SUNC * 0.38 + ambient(vec3(0.0, 0.5, 0.8)) * 1.2);
-            float a = edge * (0.55 + 0.45 * streak) * smoothstep(0.0, 0.03, vUv.y);
+            float lanes = ${(width * 1.2).toFixed(1)};
+            float lane = hash12(vec2(floor(vUv.x * lanes), 3.0));
+            float flow = vnoise(vec2(vUv.x * lanes, vUv.y * 9.0 + uTime * (2.2 + lane)));
+            float fine = vnoise(vec2(vUv.x * lanes * 3.0, vUv.y * 30.0 + uTime * 6.0));
+            float streak = smoothstep(0.3, 0.9, flow * 0.75 + fine * 0.35);
+            float edge = 1.0 - smoothstep(0.6, 1.0, x + 0.2 * vnoise(vec2(vUv.y * 12.0 - uTime * 3.0, 1.0)));
+            vec3 water = mix(vec3(0.3, 0.42, 0.48), vec3(1.0, 0.99, 0.97), streak);
+            // Écume au pied, blanche et épaisse.
+            float foam = 1.0 - smoothstep(0.0, 0.18, vUv.y);
+            water = mix(water, vec3(1.0), foam * 0.8);
+            vec3 c = water * (SUNC * 0.4 + ambient(vec3(0.0, 0.5, 0.8)) * 1.25);
+            float a = edge * (0.6 + 0.4 * streak) * smoothstep(0.0, 0.025, vUv.y);
             gl_FragColor = vec4(finish(aerial(c, vLocal)), a);
           }`,
         transparent: true,
@@ -1101,14 +1218,22 @@ export class PortalMode {
         side: THREE.DoubleSide,
       }),
     );
-    sheet.position.set(FALLS.x, (top + bottom) / 2, -(FALLS.d - 6 - run / 2 - 4));
+    sheet.position.set(x, (top + bottom) / 2, -(edge - 6 - run / 2 - 4));
     sheet.rotation.x = -Math.atan2(run, top - bottom);
     this.add(sheet, 3);
-    const foot = new THREE.Vector3(FALLS.x, WATER, -(FALLS.d - run - 12));
-    const mist = this.puffs([foot, foot.clone().add(new THREE.Vector3(-8, 0, 4)), foot.clone().add(new THREE.Vector3(8, 0, 3))], 40, {
-      size: 10, grow: 30, rise: 60, drift: 12, speed: 0.06, color: new THREE.Color(0.85, 0.88, 0.92), alpha: 0.32,
-    });
-    this.add(mist, 4);
+    const foot = new THREE.Vector3(x, WATER, -(edge - run - 14));
+    const sources = [-0.4, -0.15, 0.1, 0.35].map((f) => foot.clone().add(new THREE.Vector3(f * width, 0, (this.rnd() - 0.5) * 6)));
+    this.add(
+      this.puffs(sources, 40, {
+        size: 9 * mistScale, grow: 34 * mistScale, rise: 70 * mistScale, drift: 10, speed: 0.06, color: new THREE.Color(0.86, 0.89, 0.93), alpha: 0.34,
+      }),
+      4,
+    );
+  }
+
+  private buildFalls(): void {
+    this.buildFall(FALLS.x, 55, 1.4);
+    this.buildFall(FALLS2_X, 24, 0.8);
   }
 
   /** Le village au bord de la rivière : maisons blanches, toits sombres, fenêtres allumées, fumées. */
@@ -1157,49 +1282,168 @@ export class PortalMode {
     this.add(this.puffs(chimneys, 16, { size: 2.5, grow: 14, rise: 45, drift: 22, speed: 0.05, color: new THREE.Color(0.55, 0.53, 0.52), alpha: 0.45 }), 4);
   }
 
-  /** Voiliers qui croisent lentement sur le lac. */
+  /** Voiliers façon conte : coque de bois ronde, mât, grande voile gonflée crème et rouge à
+   *  emblème, fanion. Ils croisent lentement sur le lac. */
   private buildBoats(): void {
-    const hull = this.lit({ color: new THREE.Color(0.16, 0.09, 0.05) });
-    const sailMat = this.lit({ color: new THREE.Color(0.85, 0.82, 0.74) });
-    sailMat.side = THREE.DoubleSide;
-    const sailShape = new THREE.Shape([new THREE.Vector2(0, 0), new THREE.Vector2(0, 9), new THREE.Vector2(4.2, 0.6)]);
+    const wood = this.lit({ color: new THREE.Color(0.2, 0.1, 0.045) });
+    const deck = this.lit({ color: new THREE.Color(0.42, 0.28, 0.13) });
+    const cloth = this.lit({ color: new THREE.Color(0.5, 0.05, 0.04) });
+    cloth.side = THREE.DoubleSide;
+    const sailMat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: /* glsl */ `
+        ${VERT_LOCAL}
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vLocal = (uLandInv * w).xyz;
+          vN = normalize(mat3(uLandInv) * mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }`,
+      fragmentShader: /* glsl */ `
+        ${COMMON}
+        varying vec3 vLocal;
+        varying vec3 vN;
+        varying vec2 vUv;
+        void main() {
+          vec3 cream = vec3(0.8, 0.75, 0.63);
+          vec3 red = vec3(0.55, 0.06, 0.05);
+          float band = smoothstep(0.4, 0.42, vUv.y) - smoothstep(0.56, 0.58, vUv.y);
+          vec3 col = mix(cream, red, band);
+          float c = length((vUv - vec2(0.5, 0.76)) * vec2(1.0, 1.15));
+          col = mix(col, red, (1.0 - smoothstep(0.12, 0.13, c)) * smoothstep(0.075, 0.085, c));
+          col = mix(col, vec3(0.75, 0.55, 0.1), 1.0 - smoothstep(0.05, 0.06, c));
+          col *= 0.9 + 0.1 * vnoise(vUv * vec2(40.0, 3.0));
+          vec3 n = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
+          vec3 c2 = col * (SUNC * max(dot(n, uSun), 0.0) + ambient(n)) + col * SUNC * 0.12 * max(dot(-n, uSun), 0.0);
+          gl_FragColor = vec4(finish(aerial(c2, vLocal)), 1.0);
+        }`,
+      side: THREE.DoubleSide,
+    });
+    const sailGeo = new THREE.PlaneGeometry(6.6, 8, 10, 10);
+    const sp = sailGeo.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < sp.count; i++) {
+      const x = sp.getX(i) / 3.3;
+      const y = (sp.getY(i) + 4) / 8;
+      sp.setZ(i, 1.4 * (1 - x * x) * (0.55 + 0.45 * y));
+    }
+    sailGeo.computeVertexNormals();
     for (let i = 0; i < 3; i++) {
       const boat = new THREE.Group();
-      boat.add(new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 7).translate(0, 0.3, 0), hull));
-      boat.add(new THREE.Mesh(new THREE.ShapeGeometry(sailShape).rotateY(Math.PI / 2).translate(0, 1.2, 1.2), sailMat));
+      boat.add(new THREE.Mesh(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2).scale(2.3, 1.5, 6.5).translate(0, 0.5, 0), wood));
+      boat.add(new THREE.Mesh(new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2).scale(2.2, 1, 6.3).translate(0, 0.55, 0), deck));
+      const post = new THREE.Mesh(new THREE.ConeGeometry(0.35, 2.6, 6), wood);
+      post.position.set(0, 1.4, 6.2);
+      post.rotation.x = 0.55;
+      boat.add(post);
+      boat.add(new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 11, 8).translate(0, 6, 0.6), wood));
+      boat.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 7.2, 6).rotateZ(Math.PI / 2).translate(0, 10.4, 0.7), wood));
+      const sail = new THREE.Mesh(sailGeo, sailMat);
+      sail.position.set(0, 6.3, 0.8);
+      boat.add(sail);
+      const pennant = new THREE.Group();
+      pennant.position.set(0, 11.6, 0.6);
+      pennant.add(new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.8).translate(-1.1, 0, 0).rotateY(Math.PI / 2), cloth));
+      boat.add(pennant);
+      this.flags.push(pennant);
+      boat.scale.setScalar(1.2);
       this.boats.push(boat);
       this.add(boat, 1);
     }
   }
 
-  /** Trajet du dragon-serpent (repère du paysage) : de grandes boucles lentes, entre la cascade et
-   *  les montagnes, qui ondulent. */
+  /** Trajet du dragon-serpent (repère du paysage) : de grandes boucles lentes au-dessus du lac, du
+   *  plateau et du château. */
   private dragonPath(t: number): THREE.Vector3 {
-    const u = t * 0.055;
+    const u = t * 0.05;
     return new THREE.Vector3(
       20 + 300 * Math.sin(u * 0.9) + 80 * Math.sin(u * 2.3 + 1),
-      115 + 40 * Math.sin(u * 1.3) + 15 * Math.sin(u * 3.1),
-      -(820 + 220 * Math.sin(u * 0.6 + 1) + 50 * Math.sin(u * 1.9)),
+      150 + 40 * Math.sin(u * 1.3) + 15 * Math.sin(u * 3.1),
+      -(950 + 240 * Math.sin(u * 0.6 + 1) + 50 * Math.sin(u * 1.9)),
     );
   }
 
-  /** Un long dragon-serpent doré à l'orientale : un corps d'anneaux qui suit la tête et ondule,
-   *  une crinière électrique qui scintille, une tête à cornes et moustaches. */
-  private buildDragon(): void {
-    const ringGeo = new THREE.IcosahedronGeometry(1, 2);
-    const rings = new THREE.InstancedMesh(ringGeo, this.lit({}), DRAGON_RINGS);
-    const tint = new Float32Array(DRAGON_RINGS * 3);
-    for (let i = 0; i < DRAGON_RINGS; i++) {
-      // Écailles dorées, plus sombres et vertes vers la queue.
-      const k = i / DRAGON_RINGS;
-      tint.set([0.36 - 0.1 * k, 0.2 - 0.02 * k, 0.025 + 0.03 * k], i * 3);
-    }
-    ringGeo.setAttribute("aTint", new THREE.InstancedBufferAttribute(tint, 3));
-    ringGeo.setAttribute("aShade", new THREE.InstancedBufferAttribute(new Float32Array(DRAGON_RINGS).fill(1), 1));
-    rings.frustumCulled = false;
-    this.add(rings, 1);
+  /** Rayon du corps le long du dragon (0 = derrière la tête, 1 = bout de la queue). */
+  private static dragonRadius(k: number): number {
+    if (k < 0.06) return DRAGON_R * (0.62 + (k / 0.06) * 0.38);
+    return DRAGON_R * (1 - 0.88 * ((k - 0.06) / 0.94) ** 1.3);
+  }
 
-    const N = DRAGON_RINGS * 3;
+  /** Un long dragon-serpent doré à l'orientale : corps lisse et continu (dos doré à écailles,
+   *  ventre crème, crête lumineuse), quatre petites pattes griffues, tête à museau, mâchoire, bois
+   *  ramifiés et longues moustaches lumineuses, crinière et bout de queue électriques. */
+  private buildDragon(): void {
+    const R = DRAGON_RINGS;
+    const S = DRAGON_SEG;
+    const body = new THREE.BufferGeometry();
+    body.setAttribute("position", new THREE.BufferAttribute(new Float32Array(R * (S + 1) * 3), 3));
+    body.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(R * (S + 1) * 3), 3));
+    const side = new Float32Array(R * (S + 1));
+    const along = new Float32Array(R * (S + 1));
+    for (let i = 0; i < R; i++) {
+      for (let k = 0; k <= S; k++) {
+        side[i * (S + 1) + k] = Math.sin((k / S) * Math.PI * 2);
+        along[i * (S + 1) + k] = i / (R - 1);
+      }
+    }
+    body.setAttribute("aSide", new THREE.BufferAttribute(side, 1));
+    body.setAttribute("aAlong", new THREE.BufferAttribute(along, 1));
+    const index: number[] = [];
+    for (let i = 0; i < R - 1; i++) {
+      for (let k = 0; k < S; k++) {
+        const a = i * (S + 1) + k;
+        const b = a + S + 1;
+        index.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+    body.setIndex(index);
+    const skinMat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: /* glsl */ `
+        ${VERT_LOCAL}
+        attribute float aSide;
+        attribute float aAlong;
+        varying float vSide;
+        varying float vAlong;
+        void main() {
+          vSide = aSide;
+          vAlong = aAlong;
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vLocal = (uLandInv * w).xyz;
+          vN = normal;
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }`,
+      fragmentShader: /* glsl */ `
+        ${COMMON}
+        varying vec3 vLocal;
+        varying vec3 vN;
+        varying float vSide;
+        varying float vAlong;
+        void main() {
+          float back = smoothstep(-0.35, 0.25, vSide);
+          vec3 belly = vec3(0.55, 0.45, 0.26) * (0.85 + 0.15 * step(0.5, fract(vAlong * 90.0)));
+          vec3 gold = mix(vec3(0.42, 0.24, 0.03), vec3(0.24, 0.2, 0.05), vAlong * 0.7);
+          float scale = fract(vAlong * 240.0 + vSide * 1.5);
+          gold *= 0.72 + 0.28 * smoothstep(0.0, 0.55, scale);
+          vec3 albedo = mix(belly, gold, back);
+          vec3 n = normalize(vN);
+          vec3 v = normalize(vLocal - uCam);
+          float rim = pow(1.0 - abs(dot(n, v)), 3.0);
+          vec3 c = albedo * (SUNC * max(dot(n, uSun), 0.0) + ambient(n));
+          c += vec3(1.0, 0.7, 0.3) * rim * 0.35 + vec3(0.3, 0.9, 1.0) * smoothstep(0.93, 1.0, vSide) * 1.2;
+          gl_FragColor = vec4(finish(aerial(c, vLocal)), 1.0);
+        }`,
+      side: THREE.DoubleSide,
+    });
+    const bodyMesh = new THREE.Mesh(body, skinMat);
+    bodyMesh.frustumCulled = false;
+    this.add(bodyMesh, 1);
+
+    // Crinière (le long du dos), couronne derrière la tête, touffe au bout de la queue.
+    const crown = Array.from({ length: 50 }, () => new THREE.Vector3((this.rnd() - 0.5) * 2, this.rnd() * 1.2 + 0.3, -this.rnd() * 1.8));
+    const tuft = Array.from({ length: 70 }, () => new THREE.Vector3((this.rnd() - 0.5) * 2, (this.rnd() - 0.5) * 2, -this.rnd() * 3));
+    const N = R * 3 + crown.length + tuft.length;
     const mg = new THREE.BufferGeometry();
     mg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(N * 3), 3));
     mg.setAttribute("aSeed", new THREE.BufferAttribute(new Float32Array(N).map(() => this.rnd()), 1));
@@ -1220,7 +1464,7 @@ export class PortalMode {
             vA = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(uTime * (5.0 + 9.0 * aSeed) + aSeed * 40.0), 3.0);
             vec4 view = viewMatrix * w;
             gl_Position = projectionMatrix * view;
-            gl_PointSize = (7.0 + 6.0 * aSeed) * uRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -view.z);
+            gl_PointSize = (6.0 + 6.0 * aSeed) * uRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -view.z);
           }`,
         fragmentShader: /* glsl */ `
           varying float vA;
@@ -1237,26 +1481,71 @@ export class PortalMode {
     mane.frustumCulled = false;
     this.add(mane, 5);
 
-    // Tête : museau, deux cornes recourbées, deux longues moustaches, des yeux qui brillent.
-    const skin = this.lit({ color: new THREE.Color(0.36, 0.2, 0.025) });
-    const horn = this.lit({ color: new THREE.Color(0.75, 0.7, 0.55) });
+    // Tête (vers +z).
+    const r = DRAGON_R;
+    const skin = this.lit({ color: new THREE.Color(0.4, 0.23, 0.03) });
+    const pale = this.lit({ color: new THREE.Color(0.55, 0.45, 0.26) });
+    const ivory = this.lit({ color: new THREE.Color(0.75, 0.7, 0.55) });
     const glow = this.lit({ color: new THREE.Color(0, 0, 0), emissive: new THREE.Color(0.8, 2.2, 2.6) });
     const head = new THREE.Group();
-    head.add(new THREE.Mesh(new THREE.SphereGeometry(DRAGON_R * 1.25, 16, 12).scale(1, 0.85, 1.2), skin));
-    head.add(new THREE.Mesh(new THREE.CylinderGeometry(DRAGON_R * 0.55, DRAGON_R * 0.95, DRAGON_R * 2.6, 12).rotateX(Math.PI / 2).translate(0, -DRAGON_R * 0.25, DRAGON_R * 2.2), skin));
+    head.add(new THREE.Mesh(new THREE.SphereGeometry(r * 1.05, 20, 14).scale(1, 0.8, 1.15), skin));
+    head.add(new THREE.Mesh(new THREE.CylinderGeometry(r * 0.42, r * 0.72, r * 2.4, 16).rotateX(Math.PI / 2).translate(0, -r * 0.1, r * 1.9), skin));
+    head.add(new THREE.Mesh(new THREE.SphereGeometry(r * 0.46, 14, 10).translate(0, -r * 0.05, r * 3.1), skin));
+    const jaw = new THREE.Group();
+    jaw.position.set(0, -r * 0.45, r * 0.6);
+    jaw.add(new THREE.Mesh(new THREE.CylinderGeometry(r * 0.3, r * 0.55, r * 2.3, 14).rotateX(Math.PI / 2).translate(0, -r * 0.15, r * 1.15), pale));
+    head.add(jaw);
+    const whiskerCurve = (side: number) =>
+      new THREE.CatmullRomCurve3([
+        new THREE.Vector3(side * r * 0.45, -r * 0.15, r * 2.7),
+        new THREE.Vector3(side * r * 2.0, -r * 0.5, r * 1.8),
+        new THREE.Vector3(side * r * 3.3, -r * 1.3, -r * 0.3),
+        new THREE.Vector3(side * r * 3.9, -r * 2.4, -r * 2.6),
+      ]);
     for (const side of [-1, 1]) {
-      const h = new THREE.Mesh(new THREE.ConeGeometry(DRAGON_R * 0.28, DRAGON_R * 3.2, 8), horn);
-      h.position.set(side * DRAGON_R * 0.6, DRAGON_R * 1.6, -DRAGON_R * 1.2);
-      h.rotation.set(-0.9, 0, side * 0.35);
-      const whisker = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.6, DRAGON_R * 5, 6), glow);
-      whisker.position.set(side * DRAGON_R * 1.6, -DRAGON_R * 0.6, DRAGON_R * 2);
-      whisker.rotation.set(0.5, 0, side * 1.1);
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(DRAGON_R * 0.18, 8, 6), glow);
-      eye.position.set(side * DRAGON_R * 0.75, DRAGON_R * 0.35, DRAGON_R * 1.1);
-      head.add(h, whisker, eye);
+      // Bois : un grand andouiller recourbé vers l'arrière, deux branches.
+      const antler = new THREE.Group();
+      antler.position.set(side * r * 0.55, r * 0.6, -r * 0.3);
+      antler.rotation.set(-1.0, side * 0.25, side * 0.45);
+      antler.add(new THREE.Mesh(new THREE.CylinderGeometry(r * 0.07, r * 0.18, r * 3.4, 8).translate(0, r * 1.7, 0), ivory));
+      for (const [y, a, l] of [[1.4, 0.9, 1.4], [2.4, -0.8, 1.1]]) {
+        const branch = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.05, r * 0.1, r * l, 6).translate(0, (r * l) / 2, 0), ivory);
+        branch.position.y = r * y;
+        branch.rotation.x = a;
+        antler.add(branch);
+      }
+      head.add(antler);
+      head.add(new THREE.Mesh(new THREE.TubeGeometry(whiskerCurve(side), 24, r * 0.07, 6), glow));
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(r * 0.17, 10, 8), glow);
+      eye.position.set(side * r * 0.62, r * 0.32, r * 1.05);
+      head.add(eye);
+      const brow = new THREE.Mesh(new THREE.ConeGeometry(r * 0.18, r * 0.9, 6), skin);
+      brow.position.set(side * r * 0.6, r * 0.55, r * 0.9);
+      brow.rotation.set(-1.2, 0, side * 0.3);
+      head.add(brow);
     }
     this.add(head, 1);
-    this.dragon = { rings, mane, head };
+
+    // Quatre petites pattes : une cuisse, trois griffes.
+    const legs: { group: THREE.Group; ring: number; side: number }[] = [];
+    for (const ring of [14, 62]) {
+      for (const side of [-1, 1]) {
+        const g = new THREE.Group();
+        const leg = new THREE.Group();
+        leg.add(new THREE.Mesh(new THREE.CylinderGeometry(r * 0.22, r * 0.32, r * 1.5, 8).translate(0, -r * 0.75, 0), skin));
+        for (let c = -1; c <= 1; c++) {
+          const claw = new THREE.Mesh(new THREE.ConeGeometry(r * 0.07, r * 0.5, 5), ivory);
+          claw.position.set(c * r * 0.15, -r * 1.6, r * 0.12);
+          claw.rotation.x = Math.PI * 0.75;
+          leg.add(claw);
+        }
+        leg.rotation.z = side * 0.5;
+        g.add(leg);
+        legs.push({ group: g, ring, side });
+        this.add(g, 1);
+      }
+    }
+    this.dragon = { body, mane, head, jaw, legs, tuft, crown };
   }
 
   /** Une volée de grands oiseaux qui traverse la vallée. */
@@ -1300,45 +1589,20 @@ export class PortalMode {
     this.add(mesh, 1);
   }
 
-  /** Ce qui bouge dans le monde : voiliers, dragon-serpent, oiseaux. */
+  /** Ce qui bouge dans le monde : voiliers, drapeaux, dragon-serpent, oiseaux. */
   private animateLife(t: number): void {
     const up = new THREE.Vector3(0, 1, 0);
     this.boats.forEach((boat, i) => {
       const a = t * 0.012 + i * 2.1;
-      const x = LAKE.x + Math.cos(a) * (55 - i * 12);
-      const d = LAKE.d + Math.sin(a) * (50 - i * 10);
+      const x = LAKE.x + Math.cos(a) * (60 - i * 14);
+      const d = LAKE.d + Math.sin(a) * (55 - i * 12);
       boat.position.set(x, WATER + Math.sin(t * 1.3 + i) * 0.15, -d);
-      boat.rotation.set(Math.sin(t * 0.9 + i) * 0.04, Math.atan2(-Math.sin(a), -Math.cos(a)) + Math.PI / 2, Math.sin(t * 1.1 + i * 2) * 0.05);
+      boat.rotation.set(Math.sin(t * 0.9 + i) * 0.04, Math.atan2(-Math.sin(a), -Math.cos(a)), Math.sin(t * 1.1 + i * 2) * 0.05);
     });
-    if (this.dragon) {
-      const { rings, mane, head } = this.dragon;
-      const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const mp = mane.geometry.attributes.position as THREE.BufferAttribute;
-      for (let i = 0; i < DRAGON_RINGS; i++) {
-        const tt = t - i * DRAGON_LAG;
-        const p = this.dragonPath(tt);
-        // Ondulation qui court le long du corps.
-        p.y += Math.sin(i * 0.2 - t * 2.0) * 7;
-        p.x += Math.sin(i * 0.13 - t * 1.5) * 5;
-        const k = i / DRAGON_RINGS;
-        const r = DRAGON_R * (k < 0.08 ? 0.85 + k * 2 : 1 - 0.85 * ((k - 0.08) / 0.92) ** 1.4);
-        m.compose(p, q, new THREE.Vector3(r, r, r));
-        rings.setMatrixAt(i, m);
-        // Crinière : flammèches au-dessus du dos, plus fournies vers la tête.
-        for (let j = 0; j < 3; j++) {
-          const lift = r * (1 + 0.45 * j) + Math.sin(t * 6 + i + j * 2) * 1.2;
-          mp.setXYZ(i * 3 + j, p.x + Math.sin(i * 1.7 + j) * r * 0.4, p.y + lift, p.z + Math.cos(i * 1.3 + j) * r * 0.4);
-        }
-      }
-      rings.instanceMatrix.needsUpdate = true;
-      mp.needsUpdate = true;
-      const hp = this.dragonPath(t + DRAGON_LAG * 1.5);
-      hp.y += Math.sin(-t * 2.0 - 0.3) * 7;
-      head.position.copy(hp);
-      head.up.copy(up);
-      head.lookAt(this.dragonPath(t + DRAGON_LAG * 4));
-    }
+    this.flags.forEach((f, i) => {
+      f.rotation.y = Math.sin(t * 2.6 + i * 1.7) * 0.35 + Math.sin(t * 6.1 + i) * 0.08;
+    });
+    if (this.dragon) this.animateDragon(t, up);
     if (this.birds) {
       const { mesh, offsets } = this.birds;
       const cx = -450 + ((t * 14) % 900);
@@ -1352,6 +1616,80 @@ export class PortalMode {
         mesh.setMatrixAt(i, m);
       });
       mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /** Le dragon : la colonne suit le trajet de la tête (avec du retard) et ondule ; le corps est
+   *  reconstruit autour à chaque image (anneaux orientés), crinière et pattes posées dessus. */
+  private animateDragon(t: number, up: THREE.Vector3): void {
+    const D = this.dragon!;
+    const R = DRAGON_RINGS;
+    const S = DRAGON_SEG;
+    const spine: THREE.Vector3[] = [];
+    for (let i = 0; i < R; i++) {
+      const p = this.dragonPath(t - i * DRAGON_LAG);
+      p.y += Math.sin(i * 0.2 - t * 2.0) * 7;
+      p.x += Math.sin(i * 0.13 - t * 1.5) * 5;
+      spine.push(p);
+    }
+    const pos = D.body.attributes.position as THREE.BufferAttribute;
+    const nor = D.body.attributes.normal as THREE.BufferAttribute;
+    const mp = D.mane.geometry.attributes.position as THREE.BufferAttribute;
+    const T = new THREE.Vector3();
+    const Nv = new THREE.Vector3();
+    const B = new THREE.Vector3();
+    const frames: { N: THREE.Vector3; B: THREE.Vector3; T: THREE.Vector3; r: number }[] = [];
+    for (let i = 0; i < R; i++) {
+      T.subVectors(spine[Math.max(0, i - 1)], spine[Math.min(R - 1, i + 1)]).normalize();
+      Nv.crossVectors(T, up).normalize();
+      B.crossVectors(Nv, T);
+      const r = PortalMode.dragonRadius(i / (R - 1));
+      frames.push({ N: Nv.clone(), B: B.clone(), T: T.clone(), r });
+      for (let k = 0; k <= S; k++) {
+        const a = (k / S) * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const j = i * (S + 1) + k;
+        pos.setXYZ(j, spine[i].x + (Nv.x * ca + B.x * sa * 1.08) * r, spine[i].y + (Nv.y * ca + B.y * sa * 1.08) * r, spine[i].z + (Nv.z * ca + B.z * sa * 1.08) * r);
+        nor.setXYZ(j, Nv.x * ca + B.x * sa, Nv.y * ca + B.y * sa, Nv.z * ca + B.z * sa);
+      }
+      for (let j = 0; j < 3; j++) {
+        const lift = r * (1.05 + 0.4 * j) + Math.sin(t * 6 + i + j * 2) * 1.2;
+        mp.setXYZ(i * 3 + j, spine[i].x + B.x * lift + Nv.x * Math.sin(i * 1.7 + j) * r * 0.3, spine[i].y + B.y * lift, spine[i].z + B.z * lift + Nv.z * Math.sin(i * 1.7 + j) * r * 0.3);
+      }
+    }
+    pos.needsUpdate = true;
+    nor.needsUpdate = true;
+    D.body.computeBoundingSphere();
+    // Couronne derrière la tête, touffe au bout de la queue (elle flotte).
+    const f0 = frames[2];
+    let n = R * 3;
+    for (const o of D.crown) {
+      const p = spine[2].clone().addScaledVector(f0.N, o.x * DRAGON_R).addScaledVector(f0.B, o.y * DRAGON_R * 1.3).addScaledVector(f0.T, o.z * DRAGON_R);
+      mp.setXYZ(n++, p.x, p.y + Math.sin(t * 3 + o.x * 5) * 0.8, p.z);
+    }
+    const fe = frames[R - 1];
+    for (const o of D.tuft) {
+      const p = spine[R - 1].clone().addScaledVector(fe.N, o.x * DRAGON_R * 0.6).addScaledVector(fe.B, o.y * DRAGON_R * 0.6 + Math.sin(t * 2.5 + o.z * 2) * 2).addScaledVector(fe.T, o.z * DRAGON_R);
+      mp.setXYZ(n++, p.x, p.y, p.z);
+    }
+    mp.needsUpdate = true;
+    // Tête, mâchoire qui s'entrouvre.
+    const hp = this.dragonPath(t + DRAGON_LAG * 1.6);
+    hp.y += Math.sin(-t * 2.0 - 0.3) * 7;
+    hp.x += Math.sin(-t * 1.5 - 0.2) * 5;
+    D.head.position.copy(hp);
+    D.head.up.copy(up);
+    D.head.lookAt(this.dragonPath(t + DRAGON_LAG * 5));
+    D.jaw.rotation.x = 0.12 + 0.1 * Math.sin(t * 0.7);
+    // Pattes : sous le ventre, qui pédalent doucement.
+    const basis = new THREE.Matrix4();
+    for (const L of D.legs) {
+      const f = frames[L.ring];
+      basis.makeBasis(f.N, f.B, f.T);
+      L.group.quaternion.setFromRotationMatrix(basis);
+      L.group.position.copy(spine[L.ring]).addScaledVector(f.N, L.side * f.r * 0.7).addScaledVector(f.B, -f.r * 0.45);
+      L.group.rotateX(Math.sin(t * 1.8 + L.ring * 0.3 + L.side) * 0.35);
     }
   }
 

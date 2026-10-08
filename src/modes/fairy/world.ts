@@ -290,6 +290,16 @@ export class MirrorWorld {
     return this.eye;
   }
 
+  /** Instant (performance.now) de la dernière mesure de l'œil reçue du serveur. */
+  get eyeTime(): number {
+    return this.eyeAt;
+  }
+
+  /** Recalcule la caméra tout de suite (un mode vient de changer le point de vue imposé). */
+  refreshCamera(): void {
+    this.updateCamera();
+  }
+
   /** Largeur, hauteur de l'écran et écart vitre/dalle (m). */
   get screenMeters(): Vec3 {
     return this.screen ?? [0.62, 1.1, 0];
