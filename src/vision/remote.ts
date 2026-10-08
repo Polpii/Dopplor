@@ -58,7 +58,7 @@ export class RemoteSource implements VisionSource {
   private mirrorInfo: MirrorInfo | null = null;
   private resultSpace: Space = "camera";
   private eyeOnGlass: [number, number] | null = null;
-  private wantOcclusion = false;
+  private wantOcclusion = 0;
   private lastOcclusion: Occlusion | null = null;
 
   private constructor(
@@ -88,7 +88,7 @@ export class RemoteSource implements VisionSource {
             // Reconnexion : on réapplique ce que l'utilisateur avait choisi.
             for (const kind of Object.keys(this.enabled) as TaskKind[]) this.send({ cmd: "enable", kind, on: this.enabled[kind] });
             if (this.wantPreview) this.send({ cmd: "preview", on: true });
-            if (this.wantOcclusion) this.send({ cmd: "occlusion", on: true });
+            if (this.wantOcclusion) this.send({ cmd: "occlusion", level: this.wantOcclusion });
             if (!greeted) {
               greeted = true;
               resolve();
@@ -210,10 +210,11 @@ export class RemoteSource implements VisionSource {
     return this.url.replace(/^ws/, "http").replace(/\/ws$/, "");
   }
 
-  setOcclusion(on: boolean): void {
-    this.wantOcclusion = on;
-    if (!on) this.lastOcclusion = null;
-    this.send({ cmd: "occlusion", on });
+  setOcclusion(level: number): void {
+    if (level === this.wantOcclusion) return;
+    this.wantOcclusion = level;
+    if (!level) this.lastOcclusion = null;
+    this.send({ cmd: "occlusion", level });
   }
 
   occlusion(): Occlusion | null {

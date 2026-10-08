@@ -10,12 +10,17 @@
 //
 // Tout se passe en 3D dans l'espace du reflet (derrière la vitre), vu depuis l'œil de la
 // personne : la fée est exactement là où elle serait si elle volait à côté de son reflet.
+//
+// Elle accompagne aussi le menu, dans tous les modes (voir menu3d.ts) : à l'ouverture elle passe
+// par chaque bulle au moment où elle éclot, reste à côté pendant qu'on choisit, file vers la
+// bulle choisie, ou replonge dans la main qui se referme. Des passages brefs : le rythme du menu
+// ne change pas. Hors du mode fée, elle apparaît et disparaît avec lui.
 import * as THREE from "three";
 import type { Scene } from "../../scene";
 import type { Occlusion } from "../../vision/source";
 import { handStates } from "../gestures";
 import { Fairy } from "./fairy";
-import { MirrorWorld, reflected } from "./world";
+import { type MirrorWorld, reflected } from "./world";
 
 /** Ressort qui la tire vers sa cible : raideur, amortissement (un peu sous l'amorti : elle vole). */
 const STIFFNESS = 10;
@@ -24,6 +29,16 @@ const DAMPING = 0.75;
 const PERCH_STIFFNESS = 80;
 
 type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff" | "fall" | "recover";
+/** Rôle dans le menu : ouverture (chemin minuté), attente à côté, choix d'une bulle, fermeture. */
+type Script =
+  | { kind: "open"; start: number; points: THREE.Vector3[]; times: number[] }
+  | { kind: "hold"; spot: THREE.Vector3; palm: THREE.Vector3; fold: number }
+  | { kind: "select"; start: number; target: THREE.Vector3; burst: boolean }
+  | { kind: "close"; start: number; from: THREE.Vector3; palm: THREE.Vector3 };
+/** Durées du rôle dans le menu (ms) : brèves, le menu garde son rythme. */
+const SELECT_MS = 320;
+const CLOSE_MS = 260;
+const FADE_MS = 160;
 type Path = "ellipse" | "saddle" | "spiral" | "visit";
 type Side = "left" | "right";
 const PATHS: Path[] = ["ellipse", "saddle", "spiral", "visit"];
@@ -85,6 +100,14 @@ const PERCH_BIAS = 0.25;
 const UP = new THREE.Vector3(0, 1, 0);
 const smooth = (k: number) => k * k * (3 - 2 * k);
 
+/** Courbe de Catmull-Rom entre p1 et p2 (u de 0 à 1). */
+function catmull(p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vector3, p3: THREE.Vector3, u: number): THREE.Vector3 {
+  const u2 = u * u;
+  const u3 = u2 * u;
+  const f = (a: number, b: number, c: number, d: number) => 0.5 * (2 * b + (-a + c) * u + (2 * a - 5 * b + 4 * c - d) * u2 + (-a + 3 * b - 3 * c + d) * u3);
+  return new THREE.Vector3(f(p0.x, p1.x, p2.x, p3.x), f(p0.y, p1.y, p2.y, p3.y), f(p0.z, p1.z, p2.z, p3.z));
+}
+
 interface HandInfo {
   /** À plat depuis (performance.now()), 0 sinon. */
   flatSince: number;
@@ -103,10 +126,11 @@ interface HandInfo {
 
 export class FairyMode {
   readonly id = "fairy";
-  private canvas: HTMLCanvasElement;
-  private world: MirrorWorld | null = null;
-  private fairy: Fairy | null = null;
+  private fairy: Fairy;
   private active = false;
+  private script: Script | null = null;
+  /** Rôle dans le menu terminé hors du mode fée : elle s'efface. */
+  private leaving = false;
   private pos = new THREE.Vector3(0.3, -0.5, -1.5);
   private vel = new THREE.Vector3();
   private angle = 0;
@@ -139,22 +163,28 @@ export class FairyMode {
   };
 
   constructor(
+    private world: MirrorWorld,
     private scene: Scene,
     private frameSize: () => [number, number],
     private occlusion: () => Occlusion | null,
-    private setOcclusion: (on: boolean) => void,
-    /** Taille de l'écran (m) d'après la calibration, en attendant le serveur. */
-    private screenSize: () => [number, number, number] | null,
   ) {
-    this.canvas = document.createElement("canvas");
-    this.canvas.id = "fairy-canvas";
-    this.canvas.className = "hidden";
-    document.body.append(this.canvas);
-    window.addEventListener("resize", () => this.world?.resize());
+    this.fairy = new Fairy(world.shared);
+    this.world.scene.add(...this.fairy.objects);
+    this.setShown(false);
   }
 
   get animating(): boolean {
     return this.active;
+  }
+
+  /** Mode fée allumé. */
+  get on(): boolean {
+    return this.active;
+  }
+
+  /** À dessiner : le mode fée, ou son rôle dans le menu. */
+  get visible(): boolean {
+    return this.active || this.script !== null || this.fairy.fade.value > 0.001;
   }
 
   /** Vrai quand elle doit laisser les mains tranquilles (menu ouvert). */
@@ -169,39 +199,148 @@ export class FairyMode {
 
   enter(now = performance.now()): void {
     this.active = true;
-    this.setOcclusion(true);
-    if (!this.world) {
-      this.world = new MirrorWorld(this.canvas);
-      this.fairy = new Fairy(this.world.shared);
-      this.world.scene.add(...this.fairy.objects);
-    }
-    this.canvas.classList.remove("hidden");
+    this.leaving = false;
     this.start = now;
     this.last = now;
     this.setMood("wander", now);
     this.perch = null;
+    this.setShown(true);
   }
 
   exit(): void {
     this.active = false;
-    this.setOcclusion(false);
-    this.canvas.classList.add("hidden");
-    this.world?.clear();
+    if (!this.script) this.setShown(false);
   }
 
-  /** Une image : comportement, animation, rendu. À chaque rafraîchissement de l'écran. */
+  private setShown(on: boolean): void {
+    this.fairy.fade.value = on ? 1 : 0;
+    for (const o of this.fairy.objects) o.visible = on;
+  }
+
+  // --- Rôle dans le menu (appelé par menu3d.ts) ---------------------------------------------------
+
+  /**
+   * Le menu s'ouvre : elle part de la paume (ou d'où elle est, en mode fée) et passe par chaque
+   * bulle au moment où elle éclot (`times`, ms depuis maintenant), puis se met à côté.
+   */
+  menuOpen(palm: THREE.Vector3, bubbles: THREE.Vector3[], times: number[], beside: THREE.Vector3, now: number): void {
+    const from = this.active ? this.pos.clone() : palm.clone();
+    if (!this.active) {
+      this.pos.copy(palm);
+      this.vel.set(0, 0.4, 0);
+      this.fairy.fade.value = 0;
+      for (const o of this.fairy.objects) o.visible = true;
+    }
+    this.leaving = false;
+    this.perch = null;
+    const last = times[times.length - 1] ?? 0;
+    this.script = { kind: "open", start: now, points: [from, ...bubbles, beside], times: [0, ...times, last + 200] };
+    this.fairy.sparkle(16, 0.9);
+  }
+
+  /** Menu ouvert : à côté des bulles ; poing qui se ferme (`fold` 0–1) : elle se rapproche de la main. */
+  menuHold(beside: THREE.Vector3, palm: THREE.Vector3, fold: number): void {
+    if (this.script?.kind === "open" || this.script?.kind === "select" || this.script?.kind === "close") {
+      if (this.script.kind !== "open") return;
+      // Ouverture en cours : la suite de l'ouverture la mène déjà à côté.
+      return;
+    }
+    this.script = { kind: "hold", spot: beside.clone(), palm: palm.clone(), fold };
+  }
+
+  /** Une bulle est choisie : elle file dessus, éclat d'étincelles. */
+  menuSelect(bubble: THREE.Vector3, now: number): void {
+    this.script = { kind: "select", start: now, target: bubble.clone(), burst: false };
+  }
+
+  /** Le menu se referme dans la main (ou s'efface) : elle y replonge. */
+  menuClose(palm: THREE.Vector3, now: number): void {
+    this.script = { kind: "close", start: now, from: this.pos.clone(), palm: palm.clone() };
+  }
+
+  /** Position imposée par son rôle dans le menu (null : son comportement habituel). */
+  private scripted(now: number, t: number): THREE.Vector3 | null {
+    const s = this.script;
+    if (!s) return null;
+    const since = now - (("start" in s && s.start) || now);
+    switch (s.kind) {
+      case "open": {
+        // Chemin minuté (courbe de Catmull-Rom par les points) : elle est sur chaque bulle
+        // pile quand elle éclot.
+        const { points: P, times: T } = s;
+        if (since >= T[T.length - 1]) {
+          this.script = { kind: "hold", spot: P[P.length - 1].clone(), palm: P[0].clone(), fold: 0 };
+          return P[P.length - 1].clone();
+        }
+        let i = 0;
+        while (i < T.length - 2 && since > T[i + 1]) i++;
+        const u = Math.min(1, Math.max(0, (since - T[i]) / Math.max(1, T[i + 1] - T[i])));
+        const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+        return catmull(p0, p1, p2, p3, u);
+      }
+      case "hold": {
+        // À côté du menu, petites boucles ; poing qui se ferme : vers la main.
+        const loop = new THREE.Vector3(0.025 * Math.cos(t * 2.4), 0.02 * Math.sin(t * 3.1), 0.02 * Math.sin(t * 2.4));
+        return s.spot.clone().add(loop).lerp(s.palm, smooth(s.fold));
+      }
+      case "select": {
+        if (!s.burst && this.pos.distanceTo(s.target) < 0.05) {
+          s.burst = true;
+          this.fairy.sparkle(30, 1.4);
+        }
+        if (since > SELECT_MS) this.endScript(now);
+        return s.target.clone();
+      }
+      case "close": {
+        const u = Math.min(1, since / CLOSE_MS);
+        if (u >= 1) {
+          this.fairy.sparkle(12, 0.6);
+          this.endScript(now);
+        }
+        return s.from.clone().lerp(s.palm, smooth(u));
+      }
+    }
+  }
+
+  /** Rôle terminé : en mode fée, elle reprend sa vie ; sinon elle s'efface. */
+  private endScript(now: number): void {
+    this.script = null;
+    if (this.active) this.setMood("orbit", now);
+    else this.leaving = true;
+  }
+
+  /** Une image : comportement, animation. À chaque rafraîchissement de l'écran (le rendu est fait par main). */
   frame(now: number): void {
-    if (!this.active || !this.world || !this.fairy) return;
+    if (!this.visible) return;
     const dt = Math.min(0.05, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     const t = (now - this.start) / 1000;
     const occ = this.occlusion();
-    this.world.update(occ, now, this.screenSize());
     if (!this.world.ready) return;
+
+    // Apparition / disparition (hors du mode fée).
+    const shown = this.active || (this.script !== null && !this.leaving);
+    const f = this.fairy.fade;
+    f.value = Math.min(1, Math.max(0, f.value + (shown ? 1 : -1) * (dt * 1000) / FADE_MS));
+    if (!shown && f.value <= 0) {
+      this.leaving = false;
+      for (const o of this.fairy.objects) o.visible = false;
+      return;
+    }
+    const scriptTarget = this.scripted(now, t);
+    if (scriptTarget && this.script?.kind === "open") {
+      // Chemin minuté : position imposée (vitesse déduite, pour son orientation).
+      this.vel.copy(scriptTarget).sub(this.pos).divideScalar(Math.max(dt, 1e-3));
+      this.pos.copy(scriptTarget);
+      this.rest += (0 - this.rest) * (1 - Math.exp(-dt * 6));
+      this.world.shared.uSolid.value = Math.max(0.01, -this.pos.z);
+      this.fairy.update(this.pos, this.vel, t, dt, 1, this.rest, 0);
+      return;
+    }
 
     const present = occ !== null && now - occ.at < 600;
     this.watchHands(occ, present, now);
-    const target = this.target(occ, present, now, t, dt);
+    const target = scriptTarget ?? (this.active ? this.target(occ, present, now, t, dt) : this.pos.clone());
     const perched = this.mood === "perched";
     // Petits élans, comme un insecte : de temps en temps, un coup d'aile de côté (pas posée).
     if (now > this.nextDart) {
@@ -211,7 +350,7 @@ export class FairyMode {
     this.dart.multiplyScalar(Math.exp(-dt * 3));
     if (this.mood === "orbit" || this.mood === "wander") target.add(this.dart);
     const since = now - this.moodSince;
-    if (this.mood === "fall") {
+    if (this.mood === "fall" && !this.script) {
       // Elle tombe : gravité douce, un peu de frottement de l'air ; puis elle se rattrape.
       this.vel.y -= FALL_GRAVITY * dt;
       this.vel.multiplyScalar(Math.exp(-dt * 0.8));
@@ -223,7 +362,9 @@ export class FairyMode {
     } else {
       // Ressort vers la cible (raide quand elle est posée ou qu'elle arrive ; mou au début du
       // rattrapage, le temps que les ailes reprennent).
-      const k = perched
+      const k = this.script
+        ? 60
+        : perched
         ? PERCH_STIFFNESS
         : this.mood === "approach"
           ? THREE.MathUtils.lerp(STIFFNESS, PERCH_STIFFNESS, smooth(Math.min(1, since / APPROACH_MS)))
@@ -244,11 +385,10 @@ export class FairyMode {
     this.world.shared.uBias.value = PERCH_BIAS * Math.max(this.rest, arriving);
     this.world.shared.uSolid.value = Math.max(0.01, -this.pos.z);
     // Vol stationnaire : un léger tremblé vertical (pas posée).
-    const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
+    const shownAt = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
     const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
     const scale = THREE.MathUtils.clamp(1 + ahead * DEPTH_SCALE, SCALE_MIN, SCALE_MAX) * (1 - (1 - PERCH_SCALE) * this.rest);
-    this.fairy.update(shown, this.vel, t, dt, scale, this.rest, tumble);
-    this.world.render();
+    this.fairy.update(shownAt, this.vel, t, dt, scale, this.rest, tumble);
   }
 
   // --- Les mains --------------------------------------------------------------------------------

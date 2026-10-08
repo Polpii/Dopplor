@@ -360,8 +360,9 @@ class Pipeline:
         self._switch = 0
         #: Enregistrement de diagnostic (commande « trace ») : tout ce qui est calculé, image par image.
         self._trace: dict | None = None
-        #: Mode fée : calculer et envoyer la silhouette du reflet (voir occlusion.py).
-        self.occlusion = False
+        #: Silhouette du reflet (voir occlusion.py) : 0 rien, 1 œil et points du corps seulement
+        #: (menu 3D prêt à s'ouvrir), 2 aussi la carte (fée, menu ouvert : à cacher derrière le corps).
+        self.occlusion = 0
         self.on_occlusion: Callable[[dict, bytes], None] | None = None
         self._occ_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="silhouette")
         self._occ_busy = False
@@ -608,14 +609,15 @@ class Pipeline:
                 self._depth = None
         return self._depth
 
-    def set_occlusion(self, on: bool) -> None:
-        """Mode fée : silhouette du reflet calculée et envoyée (et masque du corps demandé au modèle)."""
-        self.occlusion = on
-        self.tasks["pose"].segment = on
+    def set_occlusion(self, level: int) -> None:
+        """Silhouette du reflet : 0, 1 (points du corps), 2 (et la carte, avec le masque du corps
+        demandé au modèle)."""
+        self.occlusion = level
+        self.tasks["pose"].segment = level >= 2
 
-    def _send_occlusion(self, depth: np.ndarray, mask: np.ndarray | None, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int], palms: dict) -> None:
+    def _send_occlusion(self, depth: np.ndarray, mask: np.ndarray | None, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int], palms: dict, with_grid: bool) -> None:
         try:
-            occ = occlusion_map(self.mirror, depth, mask, pts, xyz, size, palms)
+            occ = occlusion_map(self.mirror, depth, mask, pts, xyz, size, palms, with_grid)
             if occ is not None and self.on_occlusion:
                 self.on_occlusion(*occ)
         except Exception:  # noqa: BLE001 - une silhouette ratée ne doit rien arrêter
@@ -688,7 +690,7 @@ class Pipeline:
             h_img, w_img = frame.rgb.shape[:2]
             self._occ_busy = True
             palms = {side: xyz for side, (at, xyz) in self._palms.items() if time.monotonic() - at < 0.15}
-            self._occ_pool.submit(self._send_occlusion, depth, self.tasks["pose"].mask, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img), palms)
+            self._occ_pool.submit(self._send_occlusion, depth, self.tasks["pose"].mask, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img), palms, self.occlusion >= 2)
         out = []
         for d, l in zip(dets, lifted):
             uv = m.project(l.xyz) if l is not None else None

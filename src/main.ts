@@ -2,6 +2,8 @@ import { CalibrationPanel } from "./calibration";
 import { ICONS, Menu, type MenuItem } from "./modes/menu";
 import { DanceMode } from "./modes/dance/dance-mode";
 import { FairyMode } from "./modes/fairy/fairy-mode";
+import { MirrorWorld } from "./modes/fairy/world";
+import { Menu3D } from "./modes/menu3d";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -116,17 +118,20 @@ async function main(): Promise<void> {
     (x, y) => renderer.toScreen(x, y),
     () => [window.innerWidth, window.innerHeight],
   );
-  // Fée : 3D derrière la vitre, cachée derrière le reflet de la personne (serveur avec profondeur).
-  const fairy = new FairyMode(
-    scene,
-    () => source.frameSize(),
-    () => source.occlusion?.() ?? null,
-    (on) => source.setOcclusion?.(on),
-    () => {
-      const c = source.mirror?.()?.calibration;
-      return c ? [c.screen_width / 100, c.screen_height / 100, c.glass_gap / 100] : null;
-    },
-  );
+  // Le monde derrière la vitre (3D, Three.js) : la fée et le menu y vivent, vus depuis l'œil de
+  // la personne et cachés derrière son reflet (serveur avec profondeur).
+  const worldCanvas = document.createElement("canvas");
+  worldCanvas.id = "fairy-canvas";
+  worldCanvas.className = "hidden";
+  document.body.append(worldCanvas);
+  const world = new MirrorWorld(worldCanvas);
+  window.addEventListener("resize", () => world.resize());
+  const screenSize = (): [number, number, number] | null => {
+    const c = source.mirror?.()?.calibration;
+    return c ? [c.screen_width / 100, c.screen_height / 100, c.glass_gap / 100] : null;
+  };
+  const occlusion = () => source.occlusion?.() ?? null;
+  const fairy = new FairyMode(world, scene, () => source.frameSize(), occlusion);
   let skeleton = true;
   let activity: "signs" | "dance" | "fairy" | null = null;
   const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
@@ -160,6 +165,9 @@ async function main(): Promise<void> {
     (id) => void choose(id),
   );
   menu.setActive(activeModes());
+  // Bulles en 3D dans le reflet, avec la fée (si le serveur donne l'œil et le corps en 3D).
+  const menu3d = new Menu3D(world, items, fairy, occlusion);
+  if (source.setOcclusion) menu.stage = menu3d;
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
   menu.paused = () => activity === "fairy" && fairy.holdsHand;
   fairy.busy = () => menu.open;
@@ -167,7 +175,7 @@ async function main(): Promise<void> {
   // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
   // des rendus et état des modes, aussi dans la version construite.
   const drawTimes: number[] = [];
-  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, menu, drawTimes, source } });
+  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, menu, menu3d, world, drawTimes, source } });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -223,8 +231,17 @@ async function main(): Promise<void> {
     return fit;
   };
   const draw = (now: number) => {
-    // La fée a son propre rendu (3D), à chaque rafraîchissement de l'écran.
-    if (fairy.animating) fairy.frame(now);
+    // Le monde 3D (fée, menu) : à chaque rafraîchissement de l'écran, sur son propre canevas.
+    // Silhouette demandée au serveur : complète quand de la 3D est à l'écran, sinon juste l'œil
+    // et les points du corps (de quoi ouvrir le menu en 3D tout de suite).
+    const occ = occlusion();
+    world.update(occ, now, screenSize());
+    fairy.frame(now);
+    menu3d.frame(menu.view(now), now);
+    const show3d = fairy.visible || menu3d.visible;
+    source.setOcclusion?.(show3d || fairy.on ? 2 : 1);
+    world.setVisible(show3d);
+    if (show3d) world.render();
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
     // squelette est allumé.
     const aligned = source.space?.() === "screen";

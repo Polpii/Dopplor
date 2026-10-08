@@ -23,6 +23,28 @@ export interface MenuItem {
 /** Polyligne [x0, y0, x1, y1, …] ou cercle { c: [x, y], r }. */
 export type Stroke = number[] | { c: [number, number]; r: number };
 
+/** État du menu ouvert, pour son apparence 3D (menu3d.ts). */
+export interface MenuView {
+  openedAt: number;
+  fold: number;
+  hovered: number | null;
+  /** Avancée du choix par le doigt posé (0–1). */
+  progress: number;
+  active: boolean[];
+}
+
+/**
+ * Bulles en 3D dans le reflet (menu3d.ts) : les gestes et le rythme restent ceux du menu, seules
+ * la place et l'apparence des bulles changent. Sans 3D possible, le menu est dessiné à plat.
+ */
+export interface MenuStage {
+  /** Place les bulles autour de la main qui ouvre ; faux si pas de 3D (pas calé, personne). */
+  open(side: "left" | "right" | null, now: number): boolean;
+  /** Où sont les bulles à l'écran (px CSS) et leur rayon. */
+  positions(): { x: number; y: number; r: number }[];
+  close(kind: "select" | "fold" | "away", index: number | null, now: number): void;
+}
+
 const DWELL_MS = 800;
 const OPEN_MS = 560;
 /** Poing tenu pour refermer, et délai après l'ouverture avant que le poing compte. */
@@ -51,6 +73,8 @@ interface Placed {
   item: MenuItem;
   x: number;
   y: number;
+  /** Rayon du bouton à l'écran (px). */
+  r: number;
   label: HTMLElement;
 }
 
@@ -80,6 +104,9 @@ export class Menu {
   private pinching = false;
   private flash: { x: number; y: number; at: number; kind: "select" | "close" } | null = null;
   private active = new Set<string>();
+  /** Bulles en 3D dans le reflet (si possible à l'ouverture). */
+  stage: MenuStage | null = null;
+  private in3D = false;
 
   constructor(
     private items: MenuItem[],
@@ -109,7 +136,7 @@ export class Menu {
 
   /** Touche M : ouvre au centre de l'écran, ou ferme. */
   toggle(now = performance.now()): void {
-    if (this.isOpen) this.close(now);
+    if (this.isOpen) this.close(now, "away");
     else {
       const [sw, sh] = this.screen();
       this.show(now, [sw / 2, sh * 0.45], [sw / 2, sh * 0.45], 0, null);
@@ -186,8 +213,12 @@ export class Menu {
       label.style.opacity = "0";
       label.style.transform = `translate(${px}px, ${py - (ITEM_RADIUS + 0.025) * unit}px) translate(-50%, -100%)`;
       this.labels.append(label);
-      return { item, x: px, y: py, label };
+      return { item, x: px, y: py, r: ITEM_RADIUS * unit, label };
     });
+    // En 3D si possible : les bulles sont posées dans le reflet, près de la main.
+    const side = hand?.split("/")[1];
+    this.in3D = this.stage?.open(side === "left" || side === "right" ? side : null, now) ?? false;
+    if (this.in3D) this.syncStage();
     this.isOpen = true;
     this.openedAt = now;
     this.origin = from;
@@ -200,10 +231,33 @@ export class Menu {
     this.fold = 0;
     this.lastTrack = now;
     this.pinching = true; // un pincement déjà en cours ne doit pas valider tout de suite
-    this.labels.classList.add("visible");
+    if (!this.in3D) this.labels.classList.add("visible");
   }
 
-  private close(now: number): void {
+  /** Bulles 3D : leur place à l'écran (la tête bouge, la perspective aussi). */
+  private syncStage(): void {
+    const pos = this.stage!.positions();
+    this.placed.forEach((p, i) => {
+      p.x = pos[i].x;
+      p.y = pos[i].y;
+      p.r = pos[i].r;
+    });
+  }
+
+  /** Pour l'apparence des bulles 3D. */
+  view(now: number): MenuView {
+    const hovered = this.hovered ? this.placed.indexOf(this.hovered) : null;
+    return {
+      openedAt: this.openedAt,
+      fold: this.fold,
+      hovered,
+      progress: this.hovered ? Math.min(1, (now - this.hoverSince) / DWELL_MS) : 0,
+      active: this.items.map((it) => this.active.has(it.id)),
+    };
+  }
+
+  private close(now: number, kind: "select" | "fold" | "away", index: number | null = null): void {
+    if (this.in3D && this.isOpen) this.stage!.close(kind, index, now);
     this.isOpen = false;
     this.closedAt = now;
     this.hovered = null;
@@ -218,7 +272,8 @@ export class Menu {
   private track(hands: HandState[], now: number): void {
     const dt = Math.min(100, now - this.lastTrack);
     this.lastTrack = now;
-    if (now - this.personSeenAt > AWAY_CLOSE_MS) return this.close(now);
+    if (now - this.personSeenAt > AWAY_CLOSE_MS) return this.close(now, "away");
+    if (this.in3D) this.syncStage();
 
     // La main qui a ouvert le menu le pilote ; si elle a disparu un moment, n'importe quelle main.
     let hand = hands.find((h) => h.track.key === this.hand);
@@ -239,7 +294,7 @@ export class Menu {
     if (this.fold >= 1) {
       const [x, y] = this.toScreen(...hand.palm);
       this.flash = { x, y, at: now, kind: "close" };
-      return this.close(now);
+      return this.close(now, "fold");
     }
     if (this.fold > 0) {
       this.origin = this.toScreen(...hand.palm);
@@ -248,17 +303,15 @@ export class Menu {
       return;
     }
 
-    const [sw, sh] = this.screen();
-    const itemR = ITEM_RADIUS * Math.min(sw, sh);
     const raw = this.toScreen(...hand.index);
     const d = (p: Placed) => Math.hypot(raw[0] - p.x, raw[1] - p.y);
-    if (!this.armed && this.placed.every((p) => d(p) > itemR * 1.8)) this.armed = true;
+    if (!this.armed && this.placed.every((p) => d(p) > p.r * 1.8)) this.armed = true;
     const ready = this.armed && now - this.openedAt > OPEN_MS;
 
     // Survol avec hystérésis : on entre à 1,3 rayon, on ne sort qu'à 1,8 rayon.
-    if (this.hovered && d(this.hovered) > itemR * 1.8) this.hovered = null;
+    if (this.hovered && d(this.hovered) > this.hovered.r * 1.8) this.hovered = null;
     if (!this.hovered && ready) {
-      const near = this.placed.reduce<Placed | null>((best, p) => (d(p) < itemR * 1.3 && (!best || d(p) < d(best)) ? p : best), null);
+      const near = this.placed.reduce<Placed | null>((best, p) => (d(p) < p.r * 1.3 && (!best || d(p) < d(best)) ? p : best), null);
       if (near) {
         this.hovered = near;
         this.hoverSince = now;
@@ -272,7 +325,7 @@ export class Menu {
     if (this.hovered && (now - this.hoverSince >= DWELL_MS || pinchStart)) {
       const chosen = this.hovered;
       this.flash = { x: chosen.x, y: chosen.y, at: now, kind: "select" };
-      this.close(now);
+      this.close(now, "select", this.placed.indexOf(chosen));
       this.onSelect(chosen.item.id);
     }
   }
@@ -285,6 +338,9 @@ export class Menu {
     const itemR = ITEM_RADIUS * unit;
     const width = Math.max(1.5, unit * 0.0025);
 
+    // En 3D, les bulles sont dessinées dans le reflet (menu3d.ts) : ici, seulement la lueur dans
+    // le poing et le curseur.
+    if (this.flash && this.in3D) this.flash = null;
     if (this.flash) {
       const t = (now - this.flash.at) / 600;
       if (t >= 1) this.flash = null;
@@ -306,6 +362,13 @@ export class Menu {
       ring(out, x, y, r * breath, 0, 1, width * 1.1, COLOR.cursor, 0.8 * level);
     }
     if (!this.isOpen) return;
+    if (this.in3D) {
+      if (this.cursor) {
+        out.dot(this.cursor[0], this.cursor[1], width * 4, COLOR.cursor, 1.6);
+        ring(out, this.cursor[0], this.cursor[1], width * 5, 0, 1, width * 0.8, COLOR.cursor, 0.6);
+      }
+      return;
+    }
 
     // Éclosion : une onde part du bout des doigts, et les bulles en sortent l'une après l'autre,
     // avec un léger dépassement avant de se poser. Repli : elles y retournent.

@@ -62,8 +62,11 @@ export interface VisionSource {
   /** Où l'œil devrait voir son propre reflet (écran 0–1). */
   eye?(): [number, number] | null;
   setCalibration?(data: Partial<CalibrationData>): void;
-  /** Silhouette du reflet : demander au serveur de l'envoyer (mode fée), et la dernière reçue. */
-  setOcclusion?(on: boolean): void;
+  /**
+   * Silhouette du reflet : 0 rien, 1 œil et points du corps (3D prête à apparaître), 2 aussi la
+   * carte (de quoi cacher la 3D derrière le corps) ; et la dernière reçue.
+   */
+  setOcclusion?(level: number): void;
   occlusion?(): Occlusion | null;
   /** Adresse HTTP du serveur Python (stockage des signes), si la source en a un. */
   apiBase?(): string;

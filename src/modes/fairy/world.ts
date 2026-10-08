@@ -34,6 +34,7 @@ uniform float uBias;
 // bloc, d'après son centre (une aile devant le corps et l'autre derrière faisait une découpe
 // bizarre). 0 : chaque fragment selon sa propre distance (étincelles).
 uniform float uSolid;
+uniform float uFade;
 // r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
   vec2 o = texture2D(uOcc, uv).rg;
@@ -46,11 +47,11 @@ float visibleAt(vec2 uv, float zBehind) {
 // uBias : la fée compte comme un peu plus près qu'elle n'est (posée sur une main, sa lumière
 // ne doit pas être cachée par cette main).
 float visibleBehind(float zBehind) {
-  if (uHasOcc < 0.5) return 1.0;
+  if (uHasOcc < 0.5) return uFade;
   zBehind -= uBias;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
   vec2 c = uCell;
-  return (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
+  return uFade * (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
     + visibleAt(uv + vec2(0.0, c.y), zBehind) + visibleAt(uv - vec2(0.0, c.y), zBehind)) / 6.0;
 }
 `;
@@ -74,6 +75,7 @@ export interface SharedUniforms {
   uCell: { value: THREE.Vector2 };
   uBias: { value: number };
   uSolid: { value: number };
+  uFade: { value: number };
   [name: string]: THREE.IUniform;
 }
 
@@ -200,6 +202,7 @@ export class MirrorWorld {
       uCell: { value: new THREE.Vector2(1 / 108, 1 / 192) },
       uBias: { value: 0 },
       uSolid: { value: 0 },
+      uFade: { value: 1 },
     };
     this.camera.matrixAutoUpdate = false;
     this.resize();
@@ -223,7 +226,7 @@ export class MirrorWorld {
    * (personne devant le miroir) ; l'œil est alors supposé à 2 m, face au haut de l'écran.
    */
   update(occ: Occlusion | null, now: number, fallbackScreen: Vec3 | null = null): void {
-    const fresh = occ !== null && now - occ.at < OCCLUSION_STALE_MS;
+    const fresh = occ !== null && now - occ.at < OCCLUSION_STALE_MS && occ.w * occ.h > 0;
     if (!occ && !this.eye && fallbackScreen) {
       this.screen = fallbackScreen;
       this.eye = toThree([fallbackScreen[0] / 2, fallbackScreen[1] * 0.2, -2]);
@@ -251,9 +254,23 @@ export class MirrorWorld {
       this.shared.uCell.value.set(1 / occ.w, 1 / occ.h);
     }
     this.shared.uHasOcc.value = fresh ? 1 : 0;
+    this.updateCamera();
   }
 
-  render(): void {
+  /** Point 3D → position à l'écran (fractions 0–1, y vers le bas). */
+  project(v: THREE.Vector3): [number, number] {
+    const p = v.clone().project(this.camera);
+    return [(p.x + 1) / 2, (1 - p.y) / 2];
+  }
+
+  /** Affiche ou cache le canevas (rien à montrer : pas de rendu, pas de composition). */
+  setVisible(on: boolean): void {
+    if (this.canvas.classList.contains("hidden") !== on) return;
+    this.canvas.classList.toggle("hidden", !on);
+    if (!on) this.renderer.clear();
+  }
+
+  private updateCamera(): void {
     if (!this.eye || !this.screen) return;
     // Perspective décentrée : l'œil regarde à travers le rectangle de l'écran (plan z = -écart).
     const [sw, sh, gap] = this.screen;
@@ -267,6 +284,10 @@ export class MirrorWorld {
     this.camera.updateMatrixWorld(true);
     this.camera.projectionMatrix.makePerspective((0 - e.x) * k, (sw - e.x) * k, (0 - e.y) * k, (-sh - e.y) * k, near, 30);
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+  }
+
+  render(): void {
+    if (!this.eye || !this.screen) return;
     this.renderer.render(this.scene, this.camera);
   }
 

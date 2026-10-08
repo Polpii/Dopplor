@@ -32,9 +32,13 @@ export class Fairy {
   private spawnDebt = 0;
   /** Éclat (0–1) : quand elle se pose sur une main, quand elle salue. */
   private flash = 0;
+  /** Opacité de toute la fée (apparition / disparition avec le menu). */
+  readonly fade = { value: 1 };
   private flapPhase = 0;
 
-  constructor(shared: SharedUniforms) {
+  constructor(world: SharedUniforms) {
+    // Ses matériaux ont leur propre fondu ; le reste (silhouette, écran…) est partagé.
+    const shared: SharedUniforms = { ...world, uFade: this.fade };
     const blue = new THREE.Color(0.45, 0.8, 1.0);
     const white = new THREE.Color(1, 1, 1);
     const quad = (size: number) => new THREE.PlaneGeometry(size, size);

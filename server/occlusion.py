@@ -69,11 +69,13 @@ def _project(X: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
     return np.stack([K[0, 0] * xd + K[0, 2], K[1, 1] * yd + K[1, 2]], axis=1).astype(np.float32)
 
 
-def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int], palms: dict | None = None) -> tuple[dict, bytes] | None:
+def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int], palms: dict | None = None, with_grid: bool = True) -> tuple[dict, bytes] | None:
     """Carte du reflet de la personne (GRID_H × GRID_W × 2 octets : distance, couverture) et ce dont la page
     a besoin pour placer sa 3D au même endroit : œil, taille de l'écran, quelques points du corps
     (repère du miroir, en mètres). `mask` : masque du corps (image tournée, demi-définition).
-    `palms` : centre des paumes mesuré par le modèle des mains (repère caméra), s'il est récent."""
+    `palms` : centre des paumes mesuré par le modèle des mains (repère caméra), s'il est récent.
+    `with_grid` : faux = seulement l'œil, l'écran et les points du corps (menu 3D prêt à
+    s'ouvrir), sans la carte (rien à cacher pour l'instant)."""
     source = mirror.source
     model = source.model
     E = mirror.state.eye
@@ -108,7 +110,7 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
     i0, j0 = i1 - 2 * ((i1 - i0) // 2), j1 - 2 * ((j1 - j0) // 2)
     grid = np.full((GRID_H, GRID_W), EMPTY, np.uint8)
     cover = np.zeros((GRID_H, GRID_W), np.float32)
-    if i1 - i0 >= 4 and j1 - j0 >= 4:
+    if with_grid and i1 - i0 >= 4 and j1 - j0 >= 4:
         SX, SY = np.meshgrid((np.arange(i0, i1, 2) + 1.0) / GRID_W * sw, (np.arange(j0, j1, 2) + 1.0) / GRID_H * sh)
         coarse = SX.shape  # cv2.remap : moins de 32 767 lignes, on garde la forme de la grille
         fine = (j1 - j0, i1 - i0)
@@ -152,9 +154,12 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
         cover[j0:j1, i0:i1] = alpha
     # Distance étendue autour du corps (le plus proche l'emporte), couverture floutée.
     k = 2 * DEPTH_SPREAD + 1
-    grid = np.where(grid == EMPTY, cv2.erode(grid, np.ones((k, k), np.uint8)), grid)
-    cover = cv2.GaussianBlur(cover, (0, 0), EDGE_BLUR)
-    out = np.stack([grid, np.clip(np.round(cover * 255), 0, 255).astype(np.uint8)], axis=2)
+    if not with_grid:
+        out = np.zeros((0, 0, 2), np.uint8)
+    else:
+        grid = np.where(grid == EMPTY, cv2.erode(grid, np.ones((k, k), np.uint8)), grid)
+        cover = cv2.GaussianBlur(cover, (0, 0), EDGE_BLUR)
+        out = np.stack([grid, np.clip(np.round(cover * 255), 0, 255).astype(np.uint8)], axis=2)
 
     to_m = lambda i: (pose_xyz[i] @ R.T + t)  # noqa: E731
     mid = lambda a, b: ((to_m(a) + to_m(b)) / 2)  # noqa: E731
@@ -167,8 +172,8 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
         return sum(to_m(i) for i in fallback) / 3
     header = {
         "type": "occlusion",
-        "w": GRID_W,
-        "h": GRID_H,
+        "w": out.shape[1],
+        "h": out.shape[0],
         "channels": 2,
         "scale": SCALE,
         "eye": r3(E),
