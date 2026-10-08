@@ -3,7 +3,7 @@ import { ICONS, Menu, type MenuItem } from "./modes/menu";
 import { DanceMode } from "./modes/dance/dance-mode";
 import { FairyMode } from "./modes/fairy/fairy-mode";
 import { MirrorWorld } from "./modes/fairy/world";
-import { Menu3D } from "./modes/menu3d";
+import { Menu3D, type ScreenPose } from "./modes/menu3d";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -166,7 +166,25 @@ async function main(): Promise<void> {
   );
   menu.setActive(activeModes());
   // Bulles en 3D dans le reflet, avec la fée (si le serveur donne l'œil et le corps en 3D).
-  const menu3d = new Menu3D(world, items, fairy, occlusion);
+  // Le reflet tel qu'il est dessiné (px CSS) : paumes, épaules, main grande ouverte.
+  const screenPose = (): ScreenPose | null => {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const body = [...reflected.bodies].find((b) => b.lostAt === null);
+    if (!body) return null;
+    const p = body.points;
+    const shoulders = Math.hypot((p[11 * 4] - p[12 * 4]) * W, (p[11 * 4 + 1] - p[12 * 4 + 1]) * H);
+    const palm: ScreenPose["palm"] = { left: null, right: null };
+    for (const h of reflected.hands) {
+      if (h.lostAt !== null || !h.side) continue;
+      const idx = [0, 5, 9, 13, 17];
+      palm[h.side] = [idx.reduce((a, i) => a + h.points[i * 4], 0) / 5 * W, idx.reduce((a, i) => a + h.points[i * 4 + 1], 0) / 5 * H];
+    }
+    const open = { left: false, right: false };
+    for (const hs of menu.lastHands) if (hs.track.side) open[hs.track.side] = hs.extended >= 4 && hs.reach >= 1.5;
+    return { palm, shoulders, open };
+  };
+  const menu3d = new Menu3D(world, items, fairy, screenPose);
   if (source.setOcclusion) menu.stage = menu3d;
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
   menu.paused = () => activity === "fairy" && fairy.holdsHand;

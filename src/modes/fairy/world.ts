@@ -257,6 +257,11 @@ export class MirrorWorld {
     this.updateCamera();
   }
 
+  /** Largeur, hauteur de l'écran et écart vitre/dalle (m). */
+  get screenMeters(): Vec3 {
+    return this.screen ?? [0.62, 1.1, 0];
+  }
+
   /** Point 3D → position à l'écran (fractions 0–1, y vers le bas). */
   project(v: THREE.Vector3): [number, number] {
     const p = v.clone().project(this.camera);
