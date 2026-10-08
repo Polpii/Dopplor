@@ -82,6 +82,7 @@ class OrbbecCamera(Source):
         if trans is not None:
             log.info("profondeur → couleur : décalage %s mm (géré par le recalage du SDK)", np.round(np.array(trans, dtype=float), 1).tolist())
         self._power_line_50hz()
+        self._steady_frame_rate(fps)
         # Accéléromètre seulement maintenant : son rappel utilise depth_to_color.
         self._accel = self._start_accel()
         self._logged_depth = False
@@ -175,6 +176,45 @@ class OrbbecCamera(Source):
             log.info("anti-scintillement 50 Hz")
         except Exception as e:  # noqa: BLE001
             log.warning("anti-scintillement non réglé : %s", e)
+
+    def _steady_frame_rate(self, fps: int) -> None:
+        """Cadence fixe même dans le noir : en exposition automatique, la caméra allonge le temps
+        de pose quand la pièce est sombre (écran du miroir noir, le soir) et tombait à 15, voire
+        2 images/s, d'où des mouvements en retard et saccadés. On interdit à l'exposition
+        automatique de ralentir la cadence et on plafonne son temps de pose à une image ; le gain
+        compense (image un peu plus bruitée la nuit, sans gêne pour la pose)."""
+        dev = self.pipe.get_device()
+
+        def prop(name: str):
+            return getattr(ob.OBPropertyID, name, None)
+
+        def try_set(name: str, value: int) -> None:
+            pid = prop(name)
+            if pid is None:
+                return
+            try:
+                if dev.is_property_supported(pid, ob.OBPermissionType.PERMISSION_WRITE):
+                    dev.set_int_property(pid, value)
+                    log.info("caméra : %s = %d", name.removeprefix("OB_PROP_COLOR_").lower(), dev.get_int_property(pid))
+            except Exception as e:  # noqa: BLE001 - réglage absent de ce modèle : on fait sans
+                log.warning("caméra : %s non réglé (%s)", name, e)
+
+        def range_of(name: str):
+            pid = prop(name)
+            try:
+                return dev.get_int_property_range(pid) if pid is not None else None
+            except Exception:  # noqa: BLE001
+                return None
+
+        try_set("OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT", 0)
+        # Temps de pose (unités de 100 µs) : au plus une image, un peu de marge pour la lecture.
+        r = range_of("OB_PROP_COLOR_AE_MAX_EXPOSURE_INT")
+        if r is not None:
+            budget = int(10000 / fps * 0.9)
+            try_set("OB_PROP_COLOR_AE_MAX_EXPOSURE_INT", max(r.min, min(r.max, budget)))
+        g = range_of("OB_PROP_COLOR_AE_MAX_GAIN_INT")
+        if g is not None:
+            try_set("OB_PROP_COLOR_AE_MAX_GAIN_INT", g.max)
 
     def _depth_of(self, frames) -> np.ndarray | None:
         """Profondeur en mètres, alignée pixel à pixel sur l'image couleur."""
