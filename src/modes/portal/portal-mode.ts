@@ -26,7 +26,7 @@ const OPEN_MS = 1400;
 const FAR = 6000;
 /** Hauteur de l'horizon dans l'arche (fraction depuis le haut), œil au-dessus de la prairie (m). */
 const HORIZON = 0.4;
-const LEDGE_BELOW_EYE = 1.2;
+const LEDGE_BELOW_EYE = 1.6;
 /** Une personne est « stable » quand son œil reste dans ce rayon (m) pendant ce temps (ms). */
 const STABLE_RADIUS = 0.06;
 const STABLE_MS = 900;
@@ -116,7 +116,7 @@ const LAKE = { x: -55, d: 470, r: 120 };
 /** Rivière : serpente dans la vallée, passe par le lac. */
 const riverX = (d: number) => 35 * Math.sin(d * 0.005) + 15 * Math.sin(d * 0.013 + 1.3) - 78;
 /** Bord de la falaise (distance à l'arche, m), irrégulier. */
-const edgeD = (x: number) => 3.6 + 0.9 * noise(x * 0.35, 4.2) + 0.4 * noise(x * 1.3, 9.1);
+const edgeD = (x: number) => 2.6 + 0.6 * noise(x * 0.35, 4.2) + 0.3 * noise(x * 1.3, 9.1);
 
 function height(x: number, d: number): number {
   const cx = riverX(d);
@@ -169,7 +169,7 @@ float fbm5(vec2 p) { float v = 0.0, a = 0.5; for (int k = 0; k < 5; k++) { v += 
 vec3 skyBase(vec3 d) {
   float h = max(d.y, 0.0);
   float sd = max(dot(d, uSun), 0.0);
-  vec3 col = mix(vec3(0.66, 0.72, 0.82), vec3(0.07, 0.20, 0.52), pow(smoothstep(0.0, 0.7, h), 0.6));
+  vec3 col = mix(vec3(0.52, 0.60, 0.74), vec3(0.07, 0.20, 0.52), pow(smoothstep(0.0, 0.7, h), 0.6));
   col = mix(col, vec3(1.15, 0.70, 0.40), exp(-h * 10.0) * (0.18 + 0.75 * pow(sd, 3.0)));
   return col + vec3(1.0, 0.70, 0.40) * (pow(sd, 10.0) * 0.5 + pow(sd, 90.0) * 1.2);
 }
@@ -179,7 +179,7 @@ vec3 aerial(vec3 col, vec3 p) {
   vec3 v = p - uCam;
   float dist = length(v);
   float above = max(0.0, (p.y + uCam.y) * 0.5 - (${VALLEY.toFixed(1)}));
-  float f = 1.0 - exp(-dist * 0.00045 * exp(-above / 500.0));
+  float f = 1.0 - exp(-dist * 0.0003 * exp(-above / 400.0));
   return mix(col, hazeColor(v / dist), f);
 }
 vec3 ambient(vec3 n) { return mix(vec3(0.10, 0.10, 0.08), vec3(0.30, 0.40, 0.58), n.y * 0.5 + 0.5); }
@@ -544,7 +544,7 @@ export class PortalMode {
     for (let j = 0; j < NZ; j++) {
       for (let i = 0; i < NX; i++) {
         const a = j * W + i;
-        index.push(a, a + W, a + 1, a + 1, a + W, a + W + 1);
+        index.push(a, a + 1, a + W, a + 1, a + W + 1, a + W);
       }
     }
     const geo = new THREE.BufferGeometry();
@@ -807,10 +807,10 @@ export class PortalMode {
   private buildMeadow(): void {
     const shade = this.sunlight(0, 1.5, 0.3);
     const blade = new THREE.BufferGeometry();
-    blade.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-0.012, 0, 0, 0.012, 0, 0, 0.004, 0.42, 0, -0.004, 0.42, 0, 0, 0.5, 0]), 3));
+    blade.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-0.008, 0, 0, 0.008, 0, 0, 0.003, 0.24, 0, -0.003, 0.24, 0, 0, 0.3, 0]), 3));
     blade.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(15).map((_, i) => (i % 3 === 2 ? 1 : 0)), 3));
     blade.setIndex([0, 1, 2, 0, 2, 3, 3, 2, 4]);
-    const N = 18000;
+    const N = 22000;
     const grass = new THREE.InstancedMesh(
       blade,
       new THREE.ShaderMaterial({
@@ -823,13 +823,13 @@ export class PortalMode {
           void main() {
             mat4 m = modelOf();
             vec4 base = m * vec4(0.0, 0.0, 0.0, 1.0);
-            float h = position.y / 0.5;
+            float h = position.y / 0.3;
             vH = h;
             vDry = step(0.82, fract(sin(dot(base.xz, vec2(12.9898, 78.233))) * 43758.5453));
             float gust = sin(base.x * 0.35 + uTime * 1.6) * 0.5 + sin(base.z * 0.5 + uTime * 1.1 + base.x * 0.2) * 0.5;
             vec4 w = m * vec4(position, 1.0);
-            w.x += (0.06 + 0.07 * gust) * h * h;
-            w.z += 0.03 * gust * h * h;
+            w.x += (0.03 + 0.04 * gust) * h * h;
+            w.z += 0.02 * gust * h * h;
             vLocal = (uLandInv * w).xyz;
             vN = vec3(0.0, 1.0, 0.0);
             gl_Position = projectionMatrix * viewMatrix * w;
@@ -841,12 +841,12 @@ export class PortalMode {
           varying float vH;
           varying float vDry;
           void main() {
-            vec3 tip = mix(vec3(0.12, 0.20, 0.04), vec3(0.32, 0.26, 0.09), vDry);
+            vec3 tip = mix(vec3(0.06, 0.11, 0.025), vec3(0.20, 0.16, 0.06), vDry);
             vec3 albedo = mix(vec3(0.015, 0.035, 0.008), tip, vH);
             vec3 v = normalize(vLocal - uCam);
             float trans = pow(max(dot(v, uSun), 0.0), 3.0) * vH;
             vec3 c = albedo * (SUNC * uShade * (0.2 + 0.5 * vH) + ambient(vec3(0.0, 1.0, 0.0)) * (0.35 + 0.65 * vH));
-            c += SUNC * vec3(0.25, 0.35, 0.05) * trans * uShade * 0.5;
+            c += SUNC * vec3(0.12, 0.18, 0.03) * trans * uShade * 0.4;
             gl_FragColor = vec4(finish(c), 1.0);
           }`,
         side: THREE.DoubleSide,
@@ -856,7 +856,7 @@ export class PortalMode {
     for (let i = 0; i < N; i++) {
       const x = (this.rnd() - 0.5) * 9;
       const d = 0.15 + this.rnd() * (edgeD(x) - 0.25);
-      const sc = 0.5 + this.rnd() * 0.8;
+      const sc = 0.6 + this.rnd() * 0.7;
       grass.setMatrixAt(
         i,
         new THREE.Matrix4().compose(
@@ -876,7 +876,7 @@ export class PortalMode {
     for (let i = 0; i < F; i++) {
       const x = (this.rnd() - 0.5) * 9;
       const d = 0.2 + this.rnd() * (edgeD(x) - 0.4);
-      flowers.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, height(x, d) + 0.12 + this.rnd() * 0.25, -d));
+      flowers.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, height(x, d) + 0.08 + this.rnd() * 0.16, -d));
       const c = petals[Math.floor(this.rnd() * petals.length)];
       tint.set([c.r, c.g, c.b], i * 3);
     }
