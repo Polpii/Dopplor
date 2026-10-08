@@ -65,6 +65,11 @@ class OrbbecCamera(Source):
         config.set_frame_aggregate_output_mode(ob.OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
         self.pipe.enable_frame_sync()
         self._up: np.ndarray | None = None
+        # Horloge de la caméra recalée sur celle du PC : chaque image est datée à sa prise de vue
+        # (~75 ms avant qu'elle n'arrive, mesuré), pas à sa réception ; ce qui dépend du retard
+        # (la vue du portail, qui anticipe le mouvement de la tête) le compte en entier.
+        self._clock_at = 0.0
+        self._sync_clock()
         self.pipe.start(config)
 
         param = self.pipe.get_camera_param()
@@ -180,6 +185,32 @@ class OrbbecCamera(Source):
             log.info("anti-scintillement 50 Hz")
         except Exception as e:  # noqa: BLE001
             log.warning("anti-scintillement non réglé : %s", e)
+
+    def _sync_clock(self) -> None:
+        try:
+            self.pipe.get_device().timer_sync_with_host()
+            self._clock_ok = True
+        except Exception as e:  # noqa: BLE001 - sans synchro : images datées à leur réception
+            self._clock_ok = False
+            log.warning("caméra : horloge non synchronisée (%s)", e)
+        self._clock_at = time.monotonic()
+
+    def _capture_wall(self, color, received_ms: float) -> float:
+        """Heure murale de prise de vue (ms) ; l'heure de réception si l'horloge de la caméra
+        n'est pas crédible. Resynchronisée toutes les minutes (dérive)."""
+        if not self._clock_ok:
+            return received_ms
+        try:
+            shot = color.get_timestamp_us() / 1000.0
+        except Exception:  # noqa: BLE001
+            return received_ms
+        age = received_ms - shot
+        if not 0 <= age < 400:
+            return received_ms
+        if not getattr(self, "_logged_age", False):
+            self._logged_age = True
+            log.info("caméra : image datée à la prise de vue (%.0f ms avant sa réception)", age)
+        return shot
 
     def _steady_frame_rate(self, fps: int) -> None:
         """Cadence fixe même dans le noir. En exposition automatique, la caméra allonge le temps
@@ -316,7 +347,9 @@ class OrbbecCamera(Source):
             if color is None or frames.get_depth_frame() is None:
                 continue
             t = time.monotonic()
-            wall = time.time() * 1000
+            wall = self._capture_wall(color, time.time() * 1000)
+            if t - self._clock_at > 60:
+                self._sync_clock()
             if self._accel is not None and t > self._accel_until:
                 self._accel.stop()
                 self._accel = None

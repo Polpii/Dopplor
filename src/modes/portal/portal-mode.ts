@@ -48,11 +48,11 @@ const tune = (name: string, fallback: number) => {
 const EYE_ALPHA = tune("EYE_ALPHA", 0.6);
 const EYE_BETA = tune("EYE_BETA", 0.18);
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
-/** Anticipation : elle sature en douceur vers cette durée (s) quand les mesures tardent (pas
- *  d'arrêt net puis de saut). Corrections de l'estimation étalées sur ~ce temps (s) au lieu
- *  d'un saut d'image. Écart (m) au-delà duquel une mesure est suspecte (un raté de squelette) :
+/** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
+ *  durée (s), puis elle sature en douceur quand les mesures tardent (pas d'arrêt net puis de
+ *  saut). Corrections de l'estimation étalées sur ~ce temps (s) au lieu d'un saut d'image. Écart (m) au-delà duquel une mesure est suspecte (un raté de squelette) :
  *  elle compte peu, sauf si elle se confirme plusieurs fois de suite (vrai mouvement). */
-const LEAD_CAP_S = tune("LEAD_CAP_S", 0.15);
+const LEAD_CAP_S = tune("LEAD_CAP_S", 0.16);
 const CORRECT_S = tune("CORRECT_S", 0.04);
 const SUSPECT_M = tune("SUSPECT_M", 0.18);
 const CONFIRM = tune("CONFIRM", 3);
@@ -390,7 +390,10 @@ export class PortalMode {
     if (!this.eyeOk) return null;
     const age = Math.max(0, (Date.now() - this.eyeWall) / 1000 + DISPLAY_S);
     if (age > EYE_STALE_MS / 1000) return this.eyeX.clone();
-    return this.eyeX.clone().addScaledVector(this.eyeV, LEAD_CAP_S * (1 - Math.exp(-age / LEAD_CAP_S)));
+    // Tout le retard est anticipé jusqu'à LEAD_CAP_S ; au-delà (mesures en retard), l'anticipation
+    // sature en douceur (pas d'arrêt net, pas d'emballement).
+    const lead = age <= LEAD_CAP_S ? age : LEAD_CAP_S + 0.06 * (1 - Math.exp(-(age - LEAD_CAP_S) / 0.06));
+    return this.eyeX.clone().addScaledVector(this.eyeV, lead);
   }
 
   /** Nouvelle mesure brute de l'œil ? On recale position et vitesse (filtre alpha-bêta, daté à la
