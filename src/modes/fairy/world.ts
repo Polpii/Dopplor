@@ -185,11 +185,13 @@ export class MirrorWorld {
   private renderer: THREE.WebGLRenderer;
   private occTexture: THREE.DataTexture;
   private eye: THREE.Vector3 | null = null;
+  private eyeAt = 0;
   private screen: Vec3 | null = null;
 
   /** `resolution` : part de la définition de l'écran (lueurs douces : la moitié suffit). */
   constructor(readonly canvas: HTMLCanvasElement, private resolution = 0.5) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "high-performance" });
+    // Stencil : le portail découpe son paysage à sa forme. Anticrénelage : arêtes du paysage.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true, alpha: false, powerPreference: "high-performance" });
     this.renderer.setClearColor(0x000000, 1);
     this.occTexture = new THREE.DataTexture(new Uint8Array([255, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
     this.occTexture.unpackAlignment = 1;
@@ -207,6 +209,16 @@ export class MirrorWorld {
       uFade: { value: 1 },
     };
     this.camera.matrixAutoUpdate = false;
+    this.resize();
+  }
+
+  /** Distance de vue (m) : 30 d'habitude, des kilomètres pour le paysage du portail. */
+  far = 30;
+
+  /** Définition du rendu (part de celle de l'écran). */
+  setResolution(r: number): void {
+    if (r === this.resolution) return;
+    this.resolution = r;
     this.resize();
   }
 
@@ -236,8 +248,18 @@ export class MirrorWorld {
     if (occ) {
       // L'œil bouge peu : un léger lissage évite que tout le monde 3D frémisse.
       const e = toThree(occ.eye);
-      // Lissé : les objets fixes dans le reflet (bulles) ne tremblent pas avec l'estimation.
-      this.eye = this.eye ? this.eye.lerp(e, 0.1) : e;
+      // Lissage adaptatif (filtre « One Euro » simplifié) : fort quand la tête est immobile (les
+      // objets fixes dans le reflet ne tremblent pas avec l'estimation), presque nul quand elle
+      // bouge vraiment (pas de retard : les objets restent collés à la pièce du reflet).
+      if (!this.eye) this.eye = e;
+      else if (occ.at !== this.eyeAt) {
+        const dt = Math.max(0.005, (occ.at - this.eyeAt) / 1000);
+        const speed = e.distanceTo(this.eye) / dt; // m/s
+        const cutoff = 0.6 + 6 * speed; // Hz
+        const k = 1 - Math.exp(-2 * Math.PI * cutoff * dt);
+        this.eye.lerp(e, k);
+      }
+      this.eyeAt = occ.at;
       this.screen = occ.screen;
     }
     if (fresh) {
@@ -283,14 +305,16 @@ export class MirrorWorld {
     // Perspective décentrée : l'œil regarde à travers le rectangle de l'écran (plan z = -écart).
     const [sw, sh, gap] = this.screen;
     const e = this.eye;
-    const near = 0.05;
+    // Plan proche juste avant la vitre (rien n'est devant elle) : bonne précision de profondeur
+    // jusqu'au lointain du portail.
+    const near = Math.max(0.05, (e.z + gap) * 0.8);
     const dz = Math.max(0.05, e.z + gap);
     const k = near / dz;
     this.camera.position.copy(e);
     this.camera.quaternion.identity();
     this.camera.updateMatrix();
     this.camera.updateMatrixWorld(true);
-    this.camera.projectionMatrix.makePerspective((0 - e.x) * k, (sw - e.x) * k, (0 - e.y) * k, (-sh - e.y) * k, near, 30);
+    this.camera.projectionMatrix.makePerspective((0 - e.x) * k, (sw - e.x) * k, (0 - e.y) * k, (-sh - e.y) * k, near, this.far);
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
   }
 

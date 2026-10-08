@@ -441,6 +441,11 @@ function icon(out: SegmentBuffer, s: Stroke, cx: number, cy: number, scale: numb
 
 /** Icônes en traits (carré [-1, 1]²). */
 export const ICONS: Record<string, Stroke[]> = {
+  portal: [
+    [0, -0.85, 0.45, -0.7, 0.68, -0.25, 0.68, 0.25, 0.45, 0.7, 0, 0.85, -0.45, 0.7, -0.68, 0.25, -0.68, -0.25, -0.45, -0.7, 0, -0.85],
+    [-0.4, 0.35, -0.1, 0.05, 0.15, 0.25, 0.4, -0.05],
+    { c: [0.2, -0.3], r: 0.12 },
+  ],
   bubbles: [
     { c: [-0.2, 0.15], r: 0.45 },
     { c: [0.45, -0.45], r: 0.25 },

@@ -5,6 +5,7 @@ import { FairyMode } from "./modes/fairy/fairy-mode";
 import { MirrorWorld } from "./modes/fairy/world";
 import { Menu3D, type ScreenPose } from "./modes/menu3d";
 import { BubbleMode, type Fingertips } from "./modes/bubbles/bubble-mode";
+import { PortalMode } from "./modes/portal/portal-mode";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -30,7 +31,7 @@ const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
 const hudMode = $("hud-mode");
 
-const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse", fairy: "fée", bubbles: "bulles" };
+const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse", fairy: "fée", bubbles: "bulles", portal: "portail" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
 const LEAD_KEY = "dopplor.predictionMs";
@@ -134,22 +135,24 @@ async function main(): Promise<void> {
   const occlusion = () => source.occlusion?.() ?? null;
   const fairy = new FairyMode(world, scene, () => source.frameSize(), occlusion);
   let skeleton = true;
-  let activity: "signs" | "dance" | "fairy" | "bubbles" | null = null;
+  let activity: "signs" | "dance" | "fairy" | "bubbles" | "portal" | null = null;
   const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
   const activeModes = () => [...(skeleton ? ["skeleton"] : []), ...(activity ? [activity] : [])];
   const choose = async (id: string) => {
     if (id === "skeleton") skeleton = !skeleton;
-    else if (id === "signs" || id === "dance" || id === "fairy" || id === "bubbles") {
+    else if (id === "signs" || id === "dance" || id === "fairy" || id === "bubbles" || id === "portal") {
       const next = activity === id ? null : id;
       if (activity === "signs") signs.exit();
       if (activity === "dance") dance.exit();
       if (activity === "fairy") fairy.exit();
       if (activity === "bubbles") bubbles.exit();
+      if (activity === "portal") portal.exit();
       activity = next;
       if (activity === "signs") await signs.enter();
       if (activity === "dance") dance.enter();
       if (activity === "fairy") fairy.enter();
       if (activity === "bubbles") bubbles.enter();
+      if (activity === "portal") portal.enter();
     }
     menu.setActive(activeModes());
     updateHud();
@@ -160,6 +163,7 @@ async function main(): Promise<void> {
     { id: "dance", label: "Danse", icon: ICONS.dance },
     { id: "fairy", label: "Fée", icon: ICONS.fairy },
     { id: "bubbles", label: "Bulles", icon: ICONS.bubbles },
+    { id: "portal", label: "Portail", icon: ICONS.portal },
   ];
   const menu = new Menu(
     items,
@@ -201,6 +205,7 @@ async function main(): Promise<void> {
     return out;
   };
   const bubbles = new BubbleMode(world, fingertips);
+  const portal = new PortalMode(world);
   if (source.setOcclusion) menu.stage = menu3d;
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
   menu.paused = () => activity === "fairy" && fairy.holdsHand;
@@ -209,7 +214,7 @@ async function main(): Promise<void> {
   // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
   // des rendus et état des modes, aussi dans la version construite.
   const drawTimes: number[] = [];
-  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, bubbles, menu, menu3d, world, drawTimes, source } });
+  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, bubbles, portal, menu, menu3d, world, drawTimes, source } });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -272,11 +277,12 @@ async function main(): Promise<void> {
     world.update(occ, now, screenSize());
     fairy.frame(now);
     bubbles.frame(now);
+    portal.frame(now);
     menu3d.frame(menu.view(now), now);
-    const show3d = fairy.visible || menu3d.visible || bubbles.visible;
+    const show3d = fairy.visible || menu3d.visible || bubbles.visible || portal.visible;
     // Carte complète dès que le poing s'allume (menu prêt à s'ouvrir) : elle est déjà là quand
     // les bulles naissent, qui ne passent ainsi jamais devant le corps.
-    source.setOcclusion?.(show3d || fairy.on || bubbles.on || menu.animating ? 2 : 1);
+    source.setOcclusion?.(show3d || fairy.on || bubbles.on || portal.on || menu.animating ? 2 : 1);
     world.setVisible(show3d);
     if (show3d) world.render();
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
