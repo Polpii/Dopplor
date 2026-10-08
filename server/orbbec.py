@@ -214,12 +214,18 @@ class OrbbecCamera(Source):
         self._ae = {"dev": dev, "exp": float(exp), "gain": float(gain0), "cap": cap, "emin": er.min, "gmin": gr.min, "gmax": gr.max, "at": 0.0, "set": (exp, gain0)}
         log.info("caméra : exposition gérée par Dopplor (pose ≤ %d, soit %.1f ms)", cap, cap / 10)
 
-    def _diag(self, color, t: float) -> None:
+    def _diag(self, color, t: float, depth=None) -> None:
         """Diagnostic (toutes les 3 s) : cadence vue par les horodatages de la caméra, réglages
         relus sur la caméra."""
         d = getattr(self, "_dg", None)
         if d is None:
-            d = self._dg = {"at": t, "n": 0, "ts0": None}
+            d = self._dg = {"at": t, "n": 0, "ts0": None, "ci": [], "di": []}
+        try:
+            d["ci"].append(color.get_index())
+            if depth is not None:
+                d["di"].append(depth.get_index())
+        except Exception:  # noqa: BLE001
+            pass
         try:
             ts = color.get_timestamp_us()
         except Exception:  # noqa: BLE001
@@ -238,7 +244,8 @@ class OrbbecCamera(Source):
         except Exception as e:  # noqa: BLE001
             ae = exp = gain = f"? ({e})"
         span = (ts - d["ts0"]) / 1e6 if ts is not None and d["ts0"] is not None else 0
-        log.info("diag caméra : %.1f images/s reçues, %.1f selon la caméra ; auto %s, pose %s, gain %s", d["n"] / (t - d["at"]), (d["n"] - 1) / span if span > 0 else 0, ae, exp, gain)
+        ci, di = np.diff(d["ci"]), np.diff(d["di"])
+        log.info("diag caméra : %.1f images/s reçues, %.1f selon la caméra ; auto %s, pose %s, gain %s ; sauts d'index couleur %s profondeur %s", d["n"] / (t - d["at"]), (d["n"] - 1) / span if span > 0 else 0, ae, exp, gain, np.bincount(ci).tolist() if len(ci) else [], np.bincount(di).tolist() if len(di) else [])
         self._dg = None
 
     def _expose(self, yuyv: np.ndarray, t: float) -> None:
@@ -343,7 +350,7 @@ class OrbbecCamera(Source):
             wall = time.time() * 1000
             yuyv = np.frombuffer(color.get_data(), np.uint8).reshape(color.get_height(), color.get_width(), 2)
             self._expose(yuyv, t)
-            self._diag(color, t)
+            self._diag(color, t, frames.get_depth_frame())
             rgb = cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUY2)
             future: Future = self._aligner.submit(self._depth_of, frames)
             self._publish(rgb, t, wall, lambda f=future: f.result(timeout=0.2))
