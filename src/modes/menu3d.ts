@@ -210,7 +210,7 @@ export class Menu3D implements MenuStage {
     this.bubbles = items.map((item) => {
       const mesh = new THREE.Mesh(geo, bubbleMaterial(world.shared, iconTexture(item.icon)));
       const { tex, aspect } = textTexture(item.label);
-      const h = BUBBLE_R * 0.7;
+      const h = BUBBLE_R * 1.05;
       const label = new THREE.Mesh(new THREE.PlaneGeometry(h * aspect, h), labelMaterial(world.shared, tex));
       this.group.add(mesh, label);
       return { item, mesh, label, home: new THREE.Vector3(), birth: 0, glow: 0.6 };
@@ -333,7 +333,7 @@ export class Menu3D implements MenuStage {
       m.uSolid.value = Math.max(0.01, -pos.z - BIAS);
       // Nom au-dessus, une fois la bulle en place.
       const l = b.label.material.uniforms;
-      b.label.position.copy(pos).add(new THREE.Vector3(0, BUBBLE_R * 1.75 * scale, 0));
+      b.label.position.copy(pos).add(new THREE.Vector3(0, BUBBLE_R * 2.0 * scale, 0));
       l.uSolid.value = m.uSolid.value;
       l.uOpacity.value = this.opened ? Math.min(1, Math.max(0, k * 2 - 1)) * (hovered || on ? 1 : 0.6) * (1 - fold) : 0;
     });
