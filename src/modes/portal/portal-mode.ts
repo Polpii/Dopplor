@@ -16,6 +16,7 @@
 // Échelle : vu à ~2 m par une arche d'un demi-mètre, l'angle est étroit (un téléobjectif) ; tout est
 // donc grand et loin (vallée 60 m plus bas, montagnes à 2 km).
 import * as THREE from "three";
+import { Fairy } from "../fairy/fairy";
 import type { MirrorWorld } from "../fairy/world";
 
 /** Arche : part de l'écran qu'elle occupe (largeur, hauteur), centre (fraction de la hauteur). */
@@ -36,6 +37,9 @@ const VALLEY = -60;
 const WATER = VALLEY - 3.5;
 /** Soleil bas, un peu à droite de la vue (repère du paysage : x à droite, y en haut, -z au loin). */
 const SUN = new THREE.Vector3(0.62, 0.26, -0.74).normalize();
+/** Petites fées : couleurs ; les premières volent sur la prairie, les autres au-dessus du vide. */
+const FAIRY_TINTS = ["#73ccff", "#ffd36b", "#ff8fc8", "#8dff9e", "#c39bff", "#7fe8ff", "#ffb36b", "#ff9fe0"];
+const NEAR_FAIRIES = 5;
 
 // --- Bruit (simplex 2D) ------------------------------------------------------------------------------
 
@@ -228,6 +232,7 @@ export class PortalMode {
   private anchorSince = 0;
   private seenAt = -1e9;
   private lastFrame = 0;
+  private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
 
   constructor(
     private world: MirrorWorld,
@@ -293,14 +298,14 @@ export class PortalMode {
     const e = this.neutralEye().sub(this.root.position);
     const pitch = Math.atan2(this.size.y * (0.5 - HORIZON) - e.y, e.z);
     this.land.rotation.x = pitch;
+    // Les fées sont des lumières plates face à l'écran : on annule l'inclinaison du monde.
+    for (const f of this.fairies) f.fairy.group.rotation.x = -pitch;
     this.land.position.y = e.y + (e.z * Math.sin(pitch) - LEDGE_BELOW_EYE) / Math.cos(pitch);
     this.root.visible = true;
   }
 
   /** Suivi du regard : attend qu'une personne soit stable devant l'arche, puis la suit. */
-  private updateFollow(now: number): void {
-    const dt = Math.min(0.1, Math.max(0, (now - this.lastFrame) / 1000));
-    this.lastFrame = now;
+  private updateFollow(now: number, dt: number): void {
     const eye = this.world.trackedEye;
     if (this.present() && eye) {
       this.seenAt = now;
@@ -320,7 +325,9 @@ export class PortalMode {
       this.needPlace = false;
       this.place();
     }
-    this.updateFollow(now);
+    const dt = Math.min(0.1, Math.max(0, (now - this.lastFrame) / 1000));
+    this.lastFrame = now;
+    this.updateFollow(now, dt);
     this.time.value = now / 1000;
     const open = Math.min(1, (now - this.openedAt) / OPEN_MS);
     const e = 1 - (1 - open) ** 3;
@@ -331,6 +338,7 @@ export class PortalMode {
     this.rim.material.uniforms.uOpen.value = open;
     // On y entre : le monde avance un peu pendant l'ouverture.
     this.land.position.z = -1.5 * (1 - e);
+    this.flyFairies(now / 1000, dt, e);
     this.root.updateMatrixWorld(true);
     this.uniforms.uLandInv.value.copy(this.land.matrixWorld).invert();
     this.uniforms.uCam.value.copy(this.world.camera.position).applyMatrix4(this.uniforms.uLandInv.value);
@@ -419,6 +427,7 @@ export class PortalMode {
     this.buildCastle();
     this.buildMeadow();
     this.buildMotes();
+    this.buildFairies();
     console.info(`portail : paysage en ${Math.round(performance.now() - t0)} ms`);
   }
 
@@ -888,6 +897,49 @@ export class PortalMode {
     flowerGeo.setAttribute("aShade", new THREE.InstancedBufferAttribute(new Float32Array(F).fill(shade), 1));
     flowers.frustumCulled = false;
     this.add(flowers, 2);
+  }
+
+  /** Les petites fées : celles du monde du mode fée, en couleurs, sans silhouette qui les cache
+   *  mais derrière l'herbe et les collines (test de profondeur). */
+  private buildFairies(): void {
+    FAIRY_TINTS.forEach((hex, i) => {
+      const fairy = new Fairy(this.world.shared, new THREE.Color(hex));
+      fairy.occlusion.value = 0;
+      for (const o of fairy.objects) {
+        this.add(o, 20);
+        o.traverse((c) => {
+          if (c instanceof THREE.Mesh || c instanceof THREE.Points) (c.material as THREE.Material).depthTest = true;
+        });
+      }
+      this.fairies.push({ fairy, seed: i * 2.17 + 0.6, near: i < NEAR_FAIRIES, prev: null });
+    });
+  }
+
+  /** Trajet d'une fée (repère du paysage) : boucles douces et irrégulières (sommes de sinus). */
+  private fairyPath(seed: number, near: boolean, t: number): THREE.Vector3 {
+    const s = seed;
+    if (near) {
+      // Au-dessus de la prairie, entre l'arche et le bord de la falaise ; elle frôle l'herbe.
+      const x = 2.4 * Math.sin(t * 0.13 + s) + 0.8 * Math.sin(t * 0.41 + s * 2.3);
+      const d = 1.6 + 0.9 * Math.sin(t * 0.17 + s * 1.7) + 0.35 * Math.sin(t * 0.53 + s);
+      const y = 0.45 + 0.3 * Math.sin(t * 0.29 + s * 3.1) + 0.12 * Math.sin(t * 0.9 + s);
+      return new THREE.Vector3(x, y, -d);
+    }
+    // Au-dessus du vide : de grandes boucles au-delà de la falaise.
+    const x = 10 * Math.sin(t * 0.05 + s) + 3 * Math.sin(t * 0.19 + s * 1.9);
+    const d = 13 + 8 * Math.sin(t * 0.07 + s * 1.3) + 2 * Math.sin(t * 0.23 + s);
+    const y = 0.5 + 2 * Math.sin(t * 0.11 + s) + 0.6 * Math.sin(t * 0.37 + s * 2.6);
+    return new THREE.Vector3(x, y, -d);
+  }
+
+  private flyFairies(t: number, dt: number, open: number): void {
+    for (const f of this.fairies) {
+      const p = this.fairyPath(f.seed, f.near, t);
+      const v = f.prev && dt > 0 ? p.clone().sub(f.prev).divideScalar(dt) : new THREE.Vector3();
+      f.prev = p;
+      f.fairy.fade.value = open;
+      f.fairy.update(p, v, t, dt, f.near ? 0.4 : 0.9);
+    }
   }
 
   /** Poussière et pollen dorés qui flottent dans la lumière, près de l'arche. */

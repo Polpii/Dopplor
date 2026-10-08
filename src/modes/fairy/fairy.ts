@@ -38,10 +38,11 @@ export class Fairy {
   readonly occlusion = { value: 1 };
   private flapPhase = 0;
 
-  constructor(world: SharedUniforms) {
+  /** `tint` : couleur de sa lumière (bleutée par défaut). */
+  constructor(world: SharedUniforms, tint = new THREE.Color(0.45, 0.8, 1.0)) {
     // Ses matériaux ont leur propre fondu ; le reste (silhouette, écran…) est partagé.
     const shared: SharedUniforms = { ...world, uFade: this.fade, uHasOcc: this.occlusion };
-    const blue = new THREE.Color(0.45, 0.8, 1.0);
+    const blue = tint;
     const white = new THREE.Color(1, 1, 1);
     const quad = (size: number) => new THREE.PlaneGeometry(size, size);
     // Halo large et doux, lueur moyenne, cœur blanc.
@@ -51,7 +52,7 @@ export class Fairy {
     this.body.add(this.halo, this.glow, this.core);
 
     // Ailes : deux grandes en haut, deux petites en bas, attachées au centre.
-    const wingColor = new THREE.Color(0.75, 0.92, 1.0);
+    const wingColor = tint.clone().lerp(white, 0.55);
     for (const [side, lift, length, width] of [
       [1, 0.5, 0.13, 0.085],
       [-1, 0.5, 0.13, 0.085],
@@ -75,7 +76,7 @@ export class Fairy {
     geo.setAttribute("position", new THREE.BufferAttribute(this.sparkPos, 3));
     geo.setAttribute("aLife", new THREE.BufferAttribute(this.sparkLife, 1));
     geo.setAttribute("aSize", new THREE.BufferAttribute(this.sparkSize, 1));
-    this.sparks = new THREE.Points(geo, sparkMaterial(shared, new THREE.Color(0.55, 0.85, 1.0)));
+    this.sparks = new THREE.Points(geo, sparkMaterial(shared, tint.clone().lerp(white, 0.15)));
     this.sparks.frustumCulled = false;
   }
 
