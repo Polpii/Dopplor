@@ -126,8 +126,17 @@ const EXTRA_FULL = 0.5;
 const EXTRA_NONE = 1.0;
 const extraHand = (y: number) => Math.min(1, Math.max(0, (EXTRA_NONE - y) / (EXTRA_NONE - EXTRA_FULL)));
 
+/**
+ * Écart entre deux images : mains présentes des deux côtés en moyenne (un signe à deux mains
+ * n'est pas deux fois plus dur qu'un signe à une main), plus les mains qui manquent. Au miroir,
+ * avec le suivi des mains réel (plus bruité qu'en vidéo), les bonnes imitations des signes à
+ * deux mains passaient 63 % du temps quand les écarts s'additionnaient, 89 % maintenant ;
+ * fausses réussites inchangées (0 à 3 %).
+ */
 function frameDistance(a: Features, b: Features): number {
-  let d = 0;
+  let matched = 0;
+  let hands = 0;
+  let missing = 0;
   for (const side of ["left", "right"] as const) {
     const ha = a.hands[side];
     const hb = b.hands[side];
@@ -137,15 +146,16 @@ function frameDistance(a: Features, b: Features): number {
       // pend, ou la main posée devant le ventre, sont au repos (simulé : avec l'autre main
       // visible au repos, les bonnes imitations des signes à une main passaient 0 % du temps,
       // 72 à 88 % maintenant ; les fausses réussites ne bougent presque pas).
-      d += !ha && hb ? MISSING_HAND * extraHand(hb.place[1]) : MISSING_HAND;
+      missing += !ha && hb ? MISSING_HAND * extraHand(hb.place[1]) : MISSING_HAND;
       continue;
     }
     const place = Math.hypot(ha.place[0] - hb.place[0], ha.place[1] - hb.place[1]);
     let shape = 0;
     for (let i = 0; i < 40; i += 2) shape += Math.hypot(ha.shape[i] - hb.shape[i], ha.shape[i + 1] - hb.shape[i + 1]);
-    d += PLACE_WEIGHT * place + SHAPE_WEIGHT * (shape / 20);
+    matched += PLACE_WEIGHT * place + SHAPE_WEIGHT * (shape / 20);
+    hands++;
   }
-  return d;
+  return (hands ? matched / hands : 0) + missing;
 }
 
 /**
