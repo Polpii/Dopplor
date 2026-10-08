@@ -42,7 +42,14 @@ const EYE_STALE_MS = 700;
 const EYE_ALPHA = 0.5;
 const EYE_BETA = 0.12;
 const DISPLAY_S = 0.025;
-const MAX_LEAD_S = 0.16;
+/** Anticipation : elle sature en douceur vers cette durée (s) quand les mesures tardent (pas
+ *  d'arrêt net puis de saut). Corrections de l'estimation étalées sur ~ce temps (s) au lieu
+ *  d'un saut d'image. Écart (m) au-delà duquel une mesure est suspecte (un raté de squelette) :
+ *  elle compte peu, sauf si elle se confirme plusieurs fois de suite (vrai mouvement). */
+const LEAD_CAP_S = 0.15;
+const CORRECT_S = 0.06;
+const SUSPECT_M = 0.1;
+const CONFIRM = 3;
 /** Vallée en contrebas du bord de la prairie (m), niveau de l'eau. */
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
@@ -293,6 +300,8 @@ export class PortalMode {
   private eyeV = new THREE.Vector3();
   private eyeWall = 0;
   private eyeOk = false;
+  private eyeCorr = new THREE.Vector3();
+  private eyeOdd = 0;
   private birds: { mesh: THREE.InstancedMesh; offsets: THREE.Vector3[] } | null = null;
 
   constructor(
@@ -328,6 +337,7 @@ export class PortalMode {
     this.world.setResolution(1); // 4K : le paysage est la vedette
     this.viewInit = false;
     this.eyeOk = false;
+    this.eyeCorr.set(0, 0, 0);
     this.world.viewEye = () => (this.viewInit ? this.view : this.neutralEye());
   }
 
@@ -368,33 +378,49 @@ export class PortalMode {
     this.root.visible = true;
   }
 
+  /** Estimation de l'œil à l'instant où l'image sera vue (position + vitesse × âge de la mesure ;
+   *  l'anticipation sature en douceur si les mesures tardent). */
+  private predictEye(): THREE.Vector3 | null {
+    if (!this.eyeOk) return null;
+    const age = Math.max(0, (Date.now() - this.eyeWall) / 1000 + DISPLAY_S);
+    if (age > EYE_STALE_MS / 1000) return this.eyeX.clone();
+    return this.eyeX.clone().addScaledVector(this.eyeV, LEAD_CAP_S * (1 - Math.exp(-age / LEAD_CAP_S)));
+  }
+
   /** Nouvelle mesure brute de l'œil ? On recale position et vitesse (filtre alpha-bêta, daté à la
-   *  capture : les mesures irrégulières ou en retard sont prises à leur vrai instant). */
+   *  capture : les mesures irrégulières ou en retard sont prises à leur vrai instant). Le recalage
+   *  ne fait pas sauter la vue : l'écart est rendu peu à peu (eyeCorr). */
   private feedEye(): void {
     const s = this.sample();
     if (!s || s.wall === this.eyeWall) return;
     const z = new THREE.Vector3(s.eye[0], -s.eye[1], -s.eye[2]);
     const dt = (s.wall - this.eyeWall) / 1000;
+    const before = this.predictEye();
     if (!this.eyeOk || dt <= 0 || dt > 0.3 || z.distanceTo(this.eyeX) > 0.6) {
       this.eyeX.copy(z);
       this.eyeV.set(0, 0, 0);
       this.eyeOk = true;
+      this.eyeOdd = 0;
     } else {
       const pred = this.eyeX.clone().addScaledVector(this.eyeV, dt);
       const r = z.sub(pred);
-      this.eyeX.copy(pred).addScaledVector(r, EYE_ALPHA);
-      this.eyeV.addScaledVector(r, EYE_BETA / dt);
+      this.eyeOdd = r.length() > SUSPECT_M ? this.eyeOdd + 1 : 0;
+      const doubt = this.eyeOdd > 0 && this.eyeOdd < CONFIRM;
+      this.eyeX.copy(pred).addScaledVector(r, doubt ? 0.15 : EYE_ALPHA);
+      this.eyeV.addScaledVector(r, (doubt ? 0.02 : EYE_BETA) / dt);
       if (this.eyeV.length() > 2.5) this.eyeV.setLength(2.5);
     }
     this.eyeWall = s.wall;
+    const after = this.predictEye();
+    if (before && after && before.distanceTo(after) < 0.6) this.eyeCorr.add(before.sub(after));
+    else this.eyeCorr.set(0, 0, 0);
   }
 
-  /** Où est l'œil à l'instant où l'image sera vue (dernière estimation prolongée par la vitesse). */
-  private eyeNow(): THREE.Vector3 | null {
-    if (!this.eyeOk) return null;
-    const age = (Date.now() - this.eyeWall) / 1000 + DISPLAY_S;
-    if (age > EYE_STALE_MS / 1000) return this.eyeX.clone();
-    return this.eyeX.clone().addScaledVector(this.eyeV, Math.min(age, MAX_LEAD_S));
+  /** L'œil pour cette image : l'estimation, plus ce qui reste à rendre des derniers recalages. */
+  private eyeNow(dt: number): THREE.Vector3 | null {
+    this.eyeCorr.multiplyScalar(Math.exp(-dt / CORRECT_S));
+    const e = this.predictEye();
+    return e ? e.add(this.eyeCorr) : null;
   }
 
   /**
@@ -406,7 +432,7 @@ export class PortalMode {
   private updateFollow(now: number, dt: number): void {
     this.feedEye();
     const fresh = this.eyeOk && Date.now() - this.eyeWall < EYE_STALE_MS;
-    const eye = this.eyeNow();
+    const eye = this.eyeNow(dt);
     if (fresh && eye && this.present()) {
       this.seenAt = now;
       if (eye.distanceTo(this.anchor) > STABLE_RADIUS) {
