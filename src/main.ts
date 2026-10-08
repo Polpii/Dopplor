@@ -282,7 +282,9 @@ async function main(): Promise<void> {
     const show3d = fairy.visible || menu3d.visible || bubbles.visible || portal.visible;
     // Carte complète dès que le poing s'allume (menu prêt à s'ouvrir) : elle est déjà là quand
     // les bulles naissent, qui ne passent ainsi jamais devant le corps.
-    source.setOcclusion?.(show3d || fairy.on || bubbles.on || portal.on || menu.animating ? 2 : 1);
+    // Le portail n'a besoin que de l'œil (rien ne le cache) : pas de silhouette à calculer.
+    const needMask = fairy.visible || menu3d.visible || bubbles.visible || fairy.on || bubbles.on || menu.animating;
+    source.setOcclusion?.(needMask ? 2 : 1);
     world.setVisible(show3d);
     if (show3d) world.render();
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
