@@ -33,6 +33,8 @@ const LEDGE_BELOW_EYE = 1.6;
 const STABLE_RADIUS = 0.06;
 const STABLE_MS = 900;
 const LOST_MS = 1500;
+/** Présente depuis ce temps (ms) sans jamais se tenir immobile : on la suit quand même. */
+const PRESENT_MS = 3000;
 /** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
  *  le délai caméra → calcul → image. */
 const EYE_STALE_MS = 700;
@@ -285,6 +287,7 @@ export class PortalMode {
   private anchor = new THREE.Vector3(1e9, 0, 0);
   private anchorSince = 0;
   private seenAt = -1e9;
+  private presentSince = 0;
   private lastFrame = 0;
   private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
   private boats: THREE.Group[] = [];
@@ -443,7 +446,9 @@ export class PortalMode {
     const fresh = this.eyeOk && Date.now() - this.eyeWall < EYE_STALE_MS;
     const eye = this.eyeNow(dt);
     if (fresh && eye && this.present()) {
+      if (now - this.seenAt > LOST_MS) this.presentSince = now;
       this.seenAt = now;
+      if (now - this.presentSince > PRESENT_MS) this.locked = true;
       if (eye.distanceTo(this.anchor) > STABLE_RADIUS) {
         this.anchor.copy(eye);
         this.anchorSince = now;
