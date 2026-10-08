@@ -277,6 +277,9 @@ async function main(): Promise<void> {
     // et les points du corps (de quoi ouvrir le menu en 3D tout de suite).
     const occ = occlusion();
     world.update(occ, now, screenSize());
+    // Pendant le menu (poing allumé, ouverture, choix, fermeture), aucune silhouette : rien n'est
+    // découpé par le corps, ni la fée, ni les bulles.
+    if (menu.animating || menu3d.visible) world.shared.uHasOcc.value = 0;
     fairy.frame(now);
     bubbles.frame(now);
     portal.frame(now);
