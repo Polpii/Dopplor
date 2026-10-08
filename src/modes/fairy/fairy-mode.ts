@@ -32,13 +32,20 @@ type Mood = "wander" | "orbit" | "notice" | "approach" | "perched" | "takeoff" |
 /** Rôle dans le menu : ouverture (chemin minuté), attente à côté, choix d'une bulle, fermeture. */
 type Script =
   | { kind: "open"; start: number; points: THREE.Vector3[]; times: number[] }
-  | { kind: "hold"; spot: THREE.Vector3; palm: THREE.Vector3; fold: number }
-  | { kind: "select"; start: number; target: THREE.Vector3; burst: boolean }
-  | { kind: "close"; start: number; from: THREE.Vector3; palm: THREE.Vector3 };
-/** Durées du rôle dans le menu (ms) : brèves, le menu garde son rythme. */
-const SELECT_MS = 320;
-const CLOSE_MS = 260;
-const FADE_MS = 160;
+  | { kind: "hold"; spot: THREE.Vector3; palm: THREE.Vector3; fold: number; spin: number; size: number }
+  | { kind: "select"; start: number; from: THREE.Vector3; target: THREE.Vector3; radius: number; burst: boolean }
+  | { kind: "close"; start: number; from: THREE.Vector3; palm: THREE.Vector3; boom: boolean };
+/**
+ * Rôle dans le menu, bref et nerveux (ms) : choix = foncer sur la bulle puis en faire le tour
+ * d'un trait ; fermeture = piquer dans le poing, éclair et explosion d'étincelles.
+ */
+const DASH_MS = 140;
+const LOOP_MS = 200;
+const DIVE_MS = 150;
+const FADE_MS = 120;
+/** Tourbillon autour du poing qui se ferme (tours/s, au début et à la fin). */
+const WHIRL_START = 1.6;
+const WHIRL_END = 4.5;
 type Path = "ellipse" | "saddle" | "spiral" | "visit";
 type Side = "left" | "right";
 const PATHS: Path[] = ["ellipse", "saddle", "spiral", "visit"];
@@ -234,32 +241,53 @@ export class FairyMode {
     this.leaving = false;
     this.perch = null;
     const last = times[times.length - 1] ?? 0;
-    this.script = { kind: "open", start: now, points: [from, ...bubbles, beside], times: [0, ...times, last + 200] };
-    this.fairy.sparkle(16, 0.9);
+    this.script = { kind: "open", start: now, points: [from, ...bubbles, beside], times: [0, ...times, last + 160] };
+    // Elle jaillit de la paume : éclair et gerbe.
+    this.fairy.burstAt(palm, 36, 2.2);
+    this.fairy.sparkle(20, 1.6);
+  }
+
+  /** Une bulle éclot sur son passage : gerbe d'étincelles. */
+  menuPop(at: THREE.Vector3): void {
+    this.fairy.burstAt(at, 22, 1.4);
   }
 
   /** Menu ouvert : à côté des bulles ; poing qui se ferme (`fold` 0–1) : elle se rapproche de la main. */
-  menuHold(beside: THREE.Vector3, palm: THREE.Vector3, fold: number): void {
-    if (this.script?.kind === "open" || this.script?.kind === "select" || this.script?.kind === "close") {
-      if (this.script.kind !== "open") return;
-      // Ouverture en cours : la suite de l'ouverture la mène déjà à côté.
-      return;
-    }
-    this.script = { kind: "hold", spot: beside.clone(), palm: palm.clone(), fold };
+  menuHold(beside: THREE.Vector3, palm: THREE.Vector3, fold: number, size: number): void {
+    const s = this.script;
+    // Ouverture en cours (elle la mène déjà à côté), choix ou fermeture : on ne change rien.
+    if (s && s.kind !== "hold") return;
+    if (s) {
+      s.spot.copy(beside);
+      s.palm.copy(palm);
+      s.fold = fold;
+      s.size = size;
+    } else this.script = { kind: "hold", spot: beside.clone(), palm: palm.clone(), fold, spin: 0, size };
   }
 
-  /** Une bulle est choisie : elle file dessus, éclat d'étincelles. */
-  menuSelect(bubble: THREE.Vector3, now: number): void {
-    this.script = { kind: "select", start: now, target: bubble.clone(), burst: false };
+  /** Angle du tourbillon en cours (les bulles s'y enroulent dans le même sens). */
+  get whirl(): number {
+    return this.script?.kind === "hold" ? this.script.spin : 0;
   }
 
-  /** Le menu se referme dans la main (ou s'efface) : elle y replonge. */
+  /** Une bulle est choisie : elle fonce dessus, en fait le tour d'un trait, et la bulle éclate. */
+  menuSelect(bubble: THREE.Vector3, radius: number, now: number): void {
+    this.script = { kind: "select", start: now, from: this.pos.clone(), target: bubble.clone(), radius, burst: false };
+  }
+
+  /** Le menu se referme dans la main (ou s'efface) : elle pique dedans, éclair et explosion. */
   menuClose(palm: THREE.Vector3, now: number): void {
-    this.script = { kind: "close", start: now, from: this.pos.clone(), palm: palm.clone() };
+    this.script = { kind: "close", start: now, from: this.pos.clone(), palm: palm.clone(), boom: false };
+  }
+
+  /** Son rôle dans le menu impose sa position exacte (pas de ressort : vitesse nette). */
+  private get direct(): boolean {
+    const s = this.script;
+    return !!s && (s.kind !== "hold" || s.fold > 0.02);
   }
 
   /** Position imposée par son rôle dans le menu (null : son comportement habituel). */
-  private scripted(now: number, t: number): THREE.Vector3 | null {
+  private scripted(now: number, t: number, dt: number): THREE.Vector3 | null {
     const s = this.script;
     if (!s) return null;
     const since = now - (("start" in s && s.start) || now);
@@ -269,7 +297,7 @@ export class FairyMode {
         // pile quand elle éclot.
         const { points: P, times: T } = s;
         if (since >= T[T.length - 1]) {
-          this.script = { kind: "hold", spot: P[P.length - 1].clone(), palm: P[0].clone(), fold: 0 };
+          this.script = { kind: "hold", spot: P[P.length - 1].clone(), palm: P[0].clone(), fold: 0, spin: 0, size: 0.4 };
           return P[P.length - 1].clone();
         }
         let i = 0;
@@ -279,25 +307,47 @@ export class FairyMode {
         return catmull(p0, p1, p2, p3, u);
       }
       case "hold": {
-        // À côté du menu, petites boucles ; poing qui se ferme : vers la main.
-        const loop = new THREE.Vector3(0.025 * Math.cos(t * 2.4), 0.02 * Math.sin(t * 3.1), 0.02 * Math.sin(t * 2.4));
-        return s.spot.clone().add(loop).lerp(s.palm, smooth(s.fold));
+        if (s.fold <= 0.02) {
+          // À côté du menu, petites boucles.
+          s.spin = 0;
+          return s.spot.clone().add(new THREE.Vector3(0.025 * Math.cos(t * 2.4), 0.02 * Math.sin(t * 3.1), 0.02 * Math.sin(t * 2.4)));
+        }
+        // Poing qui se ferme : tourbillon de plus en plus serré et rapide autour de la main.
+        s.spin += dt * Math.PI * 2 * THREE.MathUtils.lerp(WHIRL_START, WHIRL_END, s.fold);
+        const r = THREE.MathUtils.lerp(0.9 * s.size, 0.05, smooth(s.fold));
+        return s.palm.clone().add(new THREE.Vector3(r * Math.cos(s.spin), 0.05 * (1 - s.fold) + r * 0.55 * Math.sin(s.spin), r * 0.45 * Math.sin(s.spin)));
       }
       case "select": {
-        if (!s.burst && this.pos.distanceTo(s.target) < 0.05) {
-          s.burst = true;
-          this.fairy.sparkle(30, 1.4);
+        // Fonce sur la bulle, puis un tour complet autour, d'un trait ; la bulle éclate.
+        if (since < DASH_MS) {
+          const u = since / DASH_MS;
+          const a = Math.atan2(s.from.y - s.target.y, s.from.x - s.target.x);
+          const entry = s.target.clone().add(new THREE.Vector3(s.radius * 1.5 * Math.cos(a), s.radius * 1.5 * Math.sin(a), 0));
+          return s.from.clone().lerp(entry, 1 - (1 - u) ** 3);
         }
-        if (since > SELECT_MS) this.endScript(now);
-        return s.target.clone();
-      }
-      case "close": {
-        const u = Math.min(1, since / CLOSE_MS);
-        if (u >= 1) {
-          this.fairy.sparkle(12, 0.6);
+        const u = Math.min(1, (since - DASH_MS) / LOOP_MS);
+        const a0 = Math.atan2(s.from.y - s.target.y, s.from.x - s.target.x);
+        const a = a0 + u * Math.PI * 2;
+        const r = s.radius * 1.5 * (1 - 0.6 * u);
+        if (u >= 1 && !s.burst) {
+          s.burst = true;
+          this.fairy.burstAt(s.target, 60, 2.6);
+          this.fairy.sparkle(20, 1.8);
           this.endScript(now);
         }
-        return s.from.clone().lerp(s.palm, smooth(u));
+        return s.target.clone().add(new THREE.Vector3(r * Math.cos(a), r * Math.sin(a), 0.3 * r * Math.sin(a)));
+      }
+      case "close": {
+        // Pique dans le poing (en accélérant), puis éclair et explosion.
+        const u = Math.min(1, since / DIVE_MS);
+        if (u >= 1 && !s.boom) {
+          s.boom = true;
+          this.fairy.burstAt(s.palm, 70, 3.0);
+          this.fairy.sparkle(25, 2.0);
+          this.endScript(now);
+          if (this.active) this.vel.set((Math.random() - 0.5) * 1.5, 2.2, 0.4); // en mode fée, elle ressort d'un bond
+        }
+        return s.from.clone().lerp(s.palm, u * u);
       }
     }
   }
@@ -327,8 +377,9 @@ export class FairyMode {
       for (const o of this.fairy.objects) o.visible = false;
       return;
     }
-    const scriptTarget = this.scripted(now, t);
-    if (scriptTarget && this.script?.kind === "open") {
+    const direct = this.direct;
+    const scriptTarget = this.scripted(now, t, dt);
+    if (scriptTarget && direct) {
       // Chemin minuté : position imposée (vitesse déduite, pour son orientation).
       this.vel.copy(scriptTarget).sub(this.pos).divideScalar(Math.max(dt, 1e-3));
       this.pos.copy(scriptTarget);

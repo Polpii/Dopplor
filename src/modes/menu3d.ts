@@ -10,11 +10,18 @@ import type { FairyMode } from "./fairy/fairy-mode";
 import { reflected, type MirrorWorld, type SharedUniforms } from "./fairy/world";
 import type { MenuItem, MenuStage, MenuView, Stroke } from "./menu";
 
-/** Bulle (rayon) et arc (rayon), en mètres dans le reflet. */
+/** Bulle (rayon de la géométrie, m) ; sa vraie taille suit la carrure (voir BODY_*). */
 const BUBBLE_R = 0.045;
-const ARC_R = 0.22;
-/** L'arc commence au-dessus de la paume (m). */
-const ARC_LIFT = 0.06;
+/**
+ * À l'échelle du corps (en largeurs d'épaules, mesurées en 3D) : rayon d'une bulle, de l'arc,
+ * hauteur de l'arc au-dessus de la paume. Comme les bulles sont à la profondeur de la main, la
+ * perspective fait le reste : elles grandissent et rapetissent exactement comme le reflet.
+ */
+const BODY_BUBBLE = 0.17;
+const BODY_ARC = 1.05;
+const BODY_LIFT = 0.15;
+/** L'arc s'enroule autour de la personne : les bulles des côtés sont plus en arrière (épaules). */
+const BODY_WRAP = 0.5;
 /** Écart entre deux bulles voisines sur l'arc. */
 const ARC_STEP = (48 * Math.PI) / 180;
 /** Éclosion : la première bulle, puis une toutes les … (ms) — dans le rythme du menu 2D. */
@@ -184,6 +191,8 @@ function textTexture(text: string): { tex: THREE.CanvasTexture; aspect: number }
 
 interface Bubble {
   item: MenuItem;
+  /** Déjà éclose (gerbe d'étincelles faite). */
+  popped: boolean;
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
   label: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
   /** Place sur l'arc, et quand elle éclot (ms depuis l'ouverture). */
@@ -199,6 +208,12 @@ export class Menu3D implements MenuStage {
   private beside = new THREE.Vector3();
   private shownUntil = 0;
   private opened = false;
+  /** Taille des bulles (× la géométrie) et largeur d'épaules (m), mesurées à l'ouverture. */
+  private size = 1;
+  private shoulders = 0.4;
+  /** Onde de choc (fermeture dans le poing, bulle qui éclate). */
+  private wave: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  private waveAt = -Infinity;
 
   constructor(
     private world: MirrorWorld,
@@ -213,10 +228,38 @@ export class Menu3D implements MenuStage {
       const h = BUBBLE_R * 1.05;
       const label = new THREE.Mesh(new THREE.PlaneGeometry(h * aspect, h), labelMaterial(world.shared, tex));
       this.group.add(mesh, label);
-      return { item, mesh, label, home: new THREE.Vector3(), birth: 0, glow: 0.6 };
+      return { item, mesh, label, home: new THREE.Vector3(), birth: 0, glow: 0.6, popped: false };
     });
+    this.wave = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.ShaderMaterial({
+        uniforms: { uAlpha: { value: 0 }, uColor: { value: new THREE.Color("#bfefff") } },
+        vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+        fragmentShader: /* glsl */ `
+          uniform float uAlpha;
+          uniform vec3 uColor;
+          varying vec2 vUv;
+          void main() {
+            float r = length(vUv * 2.0 - 1.0);
+            float a = (exp(-pow((r - 0.85) / 0.06, 2.0)) + 0.5 * exp(-r * r * 8.0)) * uAlpha;
+            gl_FragColor = vec4(uColor * a, a);
+          }`,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    this.wave.visible = false;
     this.group.visible = false;
-    world.scene.add(this.group);
+    world.scene.add(this.group, this.wave);
+  }
+
+  /** Onde de choc : un anneau de lumière qui s'élargit et s'éteint (~0,35 s). */
+  private shock(at: THREE.Vector3, now: number): void {
+    this.wave.position.copy(at);
+    this.waveAt = now;
+    this.wave.visible = true;
   }
 
   /** À dessiner (ouvert, ou en train de se replier / de s'effacer). */
@@ -231,14 +274,19 @@ export class Menu3D implements MenuStage {
     const body = occ.body;
     const palm = side ? reflected(side === "left" ? body.lp : body.rp) : reflected(body.chest).add(new THREE.Vector3(0, -0.05, 0.25));
     this.palm.copy(palm);
-    // Arc au-dessus de la paume, face à l'œil, gardé dans l'écran.
+    // À l'échelle de la personne.
+    const sw = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
+    this.shoulders = sw;
+    this.size = (BODY_BUBBLE * sw) / BUBBLE_R;
+    const arcR = BODY_ARC * sw;
+    // Arc au-dessus de la paume, qui s'enroule autour du buste, gardé dans l'écran.
     const n = this.bubbles.length;
     const spread = (ARC_STEP * (n - 1)) / 2;
-    const center = palm.clone().add(new THREE.Vector3(0, ARC_LIFT, 0));
+    const center = palm.clone().add(new THREE.Vector3(0, BODY_LIFT * sw, 0));
     const place = () =>
       this.bubbles.forEach((b, i) => {
         const a = -spread + ARC_STEP * i;
-        b.home.set(center.x + Math.sin(a) * ARC_R, center.y + Math.cos(a) * ARC_R, center.z);
+        b.home.set(center.x + Math.sin(a) * arcR, center.y + Math.cos(a) * arcR, center.z - BODY_WRAP * sw * (1 - Math.cos(a)));
       });
     for (let pass = 0; pass < 3; pass++) {
       place();
@@ -258,10 +306,13 @@ export class Menu3D implements MenuStage {
       center.y += (dy / (y1 - y0)) * 0.1;
     }
     place();
-    this.bubbles.forEach((b, i) => (b.birth = FIRST_MS + STEP_MS * i));
+    this.bubbles.forEach((b, i) => {
+      b.birth = FIRST_MS + STEP_MS * i;
+      b.popped = false;
+    });
     // La fée attend à droite de l'arc (côté de la dernière bulle), un peu plus haut.
     const lastHome = this.bubbles[n - 1].home;
-    this.beside.copy(lastHome).add(new THREE.Vector3(0.09, 0.05, 0.03));
+    this.beside.copy(lastHome).add(new THREE.Vector3(0.25 * sw, 0.12 * sw, 0.05));
     this.fairy.menuOpen(palm, this.bubbles.map((b) => b.home.clone()), this.bubbles.map((b) => b.birth), this.beside, now);
     this.opened = true;
     this.group.visible = true;
@@ -273,20 +324,24 @@ export class Menu3D implements MenuStage {
     const [sw, sh] = [window.innerWidth, window.innerHeight];
     return this.bubbles.map((b) => {
       const [x, y] = this.world.project(b.home);
-      const [x1] = this.world.project(b.home.clone().add(new THREE.Vector3(BUBBLE_R, 0, 0)));
+      const [x1] = this.world.project(b.home.clone().add(new THREE.Vector3(BUBBLE_R * this.size, 0, 0)));
       return { x: x * sw, y: y * sh, r: Math.abs(x1 - x) * sw };
     });
   }
 
   close(kind: "select" | "fold" | "away", index: number | null, now: number): void {
     this.opened = false;
-    this.shownUntil = now + 450;
+    this.shownUntil = now + 600;
     this.closedKind = kind;
     this.closedAt = now;
     this.chosen = index;
-    if (kind === "select" && index !== null) this.fairy.menuSelect(this.bubbles[index].home, now);
+    if (kind === "select" && index !== null) this.fairy.menuSelect(this.bubbles[index].home, BUBBLE_R * this.size, now);
     else this.fairy.menuClose(this.palm, now);
+    // Onde de choc quand la fée arrive (poing, ou bulle choisie qui éclate).
+    this.pendingShock = { at: kind === "select" && index !== null ? this.bubbles[index].home.clone() : this.palm.clone(), when: now + (kind === "select" ? 340 : 150) };
   }
+
+  private pendingShock: { at: THREE.Vector3; when: number } | null = null;
 
   private closedKind: "select" | "fold" | "away" = "fold";
   private closedAt = 0;
@@ -301,23 +356,52 @@ export class Menu3D implements MenuStage {
     const since = now - view.openedAt;
     const fold = this.opened ? easeIn(view.fold) : 1;
     const closing = this.opened ? 0 : Math.min(1, (now - this.closedAt) / 300);
-    if (this.opened) this.fairy.menuHold(this.beside, this.palm, view.fold);
+    if (this.opened) this.fairy.menuHold(this.beside, this.palm, view.fold, this.shoulders);
+    // Onde de choc.
+    if (this.pendingShock && now >= this.pendingShock.when) {
+      this.shock(this.pendingShock.at, now);
+      this.pendingShock = null;
+    }
+    const w = (now - this.waveAt) / 350;
+    if (w >= 0 && w < 1) {
+      const r = this.shoulders * (0.15 + 1.1 * (1 - (1 - w) ** 3));
+      this.wave.scale.setScalar(r * 2);
+      this.wave.material.uniforms.uAlpha.value = 1.4 * (1 - w) ** 2;
+    } else if (this.wave.visible) this.wave.visible = false;
+    // Repli : les bulles s'enroulent dans le tourbillon de la fée autour de la main.
+    const swirl = this.fairy.whirl;
     this.bubbles.forEach((b, i) => {
       const m = b.mesh.material.uniforms;
-      // Éclosion (avec un léger dépassement) quand la fée passe ; repli vers la paume.
-      const grow = easeOutBack(Math.min(1, Math.max(0, (since - b.birth) / 260)));
+      // Éclosion (avec un léger dépassement) quand la fée passe, et une gerbe d'étincelles.
+      const grow = easeOutBack(Math.min(1, Math.max(0, (since - b.birth) / 220)));
+      if (this.opened && !b.popped && since >= b.birth) {
+        b.popped = true;
+        this.fairy.menuPop(b.home);
+      }
       let k = grow * (1 - fold);
-      let pos = this.palm.clone().lerp(b.home, Math.max(0, k));
+      const rel = b.home.clone().sub(this.palm);
+      if (this.opened && view.fold > 0) rel.applyAxisAngle(new THREE.Vector3(0, 0, 1), swirl * 0.6 * view.fold);
+      let pos = this.palm.clone().addScaledVector(rel, Math.max(0, k));
       if (!this.opened) {
-        if (this.closedKind === "select" && i === this.chosen) {
-          // Bulle choisie : un éclat, puis elle s'efface.
-          k = 1 + 0.4 * closing;
+        const chosen = this.closedKind === "select" ? this.bubbles[this.chosen ?? 0].home : null;
+        if (chosen && i === this.chosen) {
+          // Bulle choisie : elle gonfle et éclate quand la fée a fini son tour.
+          const pop = Math.min(1, Math.max(0, (now - this.closedAt - 300) / 120));
+          k = 1 + 0.25 * Math.min(1, (now - this.closedAt) / 300) + 0.6 * pop;
           pos = b.home.clone();
-          m.uAppear.value = 1 - closing;
+          m.uAppear.value = 1 - pop;
+        } else if (chosen) {
+          // Les autres sont aspirées par la bulle choisie.
+          const u = Math.min(1, (now - this.closedAt) / 220);
+          k = 1 - u;
+          pos = b.home.clone().lerp(chosen, u * u);
+          m.uAppear.value = 1 - u;
         } else {
-          k = Math.max(0, 1 - closing) * (this.closedKind === "fold" ? 0 : 1);
-          pos = this.closedKind === "fold" ? this.palm.clone() : b.home.clone();
-          m.uAppear.value = (1 - closing) * (this.closedKind === "fold" ? 0 : 1);
+          // Repli dans le poing (déjà fait par le tourbillon) ou effacement en spirale.
+          const u = this.closedKind === "fold" ? 1 : closing;
+          k = 1 - u;
+          pos = this.palm.clone().addScaledVector(rel.applyAxisAngle(new THREE.Vector3(0, 0, 1), u * 3), 1 - u);
+          m.uAppear.value = 1 - u;
         }
       } else m.uAppear.value = Math.min(1, Math.max(0, k * 1.5));
       const hovered = this.opened && view.hovered === i;
@@ -327,13 +411,14 @@ export class Menu3D implements MenuStage {
       m.uGlow.value = b.glow;
       (m.uColor.value as THREE.Color).copy(hovered ? COLORS.hover : on ? COLORS.active : COLORS.idle);
       m.uProgress.value = hovered ? view.progress : 0;
-      const scale = Math.max(0.001, (0.4 + 0.6 * Math.max(0, Math.min(1.3, k))) * (hovered ? 1.12 : 1));
+      const scale = Math.max(0.001, (0.4 + 0.6 * Math.max(0, Math.min(1.6, k))) * (hovered ? 1.12 : 1)) * this.size;
       b.mesh.position.copy(pos);
       b.mesh.scale.setScalar(scale);
       m.uSolid.value = Math.max(0.01, -pos.z - BIAS);
       // Nom au-dessus, une fois la bulle en place.
       const l = b.label.material.uniforms;
       b.label.position.copy(pos).add(new THREE.Vector3(0, BUBBLE_R * 2.0 * scale, 0));
+      b.label.scale.setScalar(this.size);
       l.uSolid.value = m.uSolid.value;
       l.uOpacity.value = this.opened ? Math.min(1, Math.max(0, k * 2 - 1)) * (hovered || on ? 1 : 0.6) * (1 - fold) : 0;
     });

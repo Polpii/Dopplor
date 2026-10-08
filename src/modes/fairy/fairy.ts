@@ -3,7 +3,7 @@
 import * as THREE from "three";
 import { glowMaterial, sparkMaterial, wingMaterial, type SharedUniforms } from "./world";
 
-const SPARKS = 220;
+const SPARKS = 480;
 /** Battement des ailes (Hz) : en vol, posée (lent, comme un papillon qui se repose). */
 const FLAP_HZ = 13;
 const REST_FLAP_HZ = 1.6;
@@ -86,6 +86,11 @@ export class Fairy {
   sparkle(amount = 40, energy = 1.6): void {
     this.flash = 1;
     for (let i = 0; i < amount; i++) this.spawn(this.group.position, energy);
+  }
+
+  /** Gerbe d'étincelles ailleurs qu'autour d'elle (une bulle qui éclot, qui éclate). */
+  burstAt(at: THREE.Vector3, amount: number, energy: number): void {
+    for (let i = 0; i < amount; i++) this.spawn(at, energy);
   }
 
   /**
