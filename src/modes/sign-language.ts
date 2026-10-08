@@ -23,6 +23,7 @@ import {
   matchSign,
   didTheMovement,
   extent,
+  templateExtent,
   signFeatures,
   progress,
   MATCH_DISTANCE,
@@ -107,7 +108,8 @@ export class SignLanguageMode {
   private shownScore = 0;
   private active = false;
   /** Dernière comparaison (diagnostic : enregistrement d'une session sur le miroir). */
-  debug: { at: number; word: string; distance: number; moved: boolean; frames: number; hands: Record<Side, [number, number] | null> } | null = null;
+  debug: { at: number; word: string; distance: number; moved: boolean; frames: number; hands: Record<Side, [number, number] | null>; span?: number; extent?: number; needed?: number } | null = null;
+  private why: { span: number; extent: number; needed: number } | null = null;
 
   constructor(
     private scene: Scene,
@@ -262,6 +264,7 @@ export class SignLanguageMode {
     this.debug = {
       at: now, word: target.label, distance, moved, frames: live.length,
       hands: { left: last?.left?.place ?? null, right: last?.right?.place ?? null },
+      ...this.why,
     };
     // Bonne pose mais sans le mouvement : la jauge s'arrête avant la fin.
     this.setScore(moved ? progress(distance) : Math.min(progress(distance), 0.75));
@@ -295,7 +298,10 @@ export class SignLanguageMode {
       }
     }
     if (!best) return { distance: Infinity, moved: false };
-    return { distance: best.match.distance, moved: didTheMovement(best.template, best.extent, live, best.match) };
+    const m = best.match;
+    // Diagnostic : pourquoi le mouvement est refusé (durée alignée, amplitude faite / demandée).
+    this.why = { span: (m.end - m.start + 1) / best.template.length, extent: extent(live.slice(m.start, m.end + 1)), needed: 0.5 * best.extent };
+    return { distance: m.distance, moved: didTheMovement(best.template, best.extent, live, m) };
   }
 
   // --- Le double doré ---------------------------------------------------------------------------
@@ -408,7 +414,7 @@ export class SignLanguageMode {
       const loaded: LoadedSign = { sign, clip: new GhostClip(sign), features: signFeatures(sign), mirror: [], extent: 0 };
       if (loaded.features.length < 3) continue;
       loaded.mirror = loaded.features.map(mirrored);
-      loaded.extent = extent(loaded.features);
+      loaded.extent = templateExtent(loaded.features);
       const key = plain(sign.label);
       const lesson = byLabel.get(key) ?? { label: sign.label.trim(), variants: [] };
       if (spellingScore(sign.label) > spellingScore(lesson.label)) lesson.label = sign.label.trim();

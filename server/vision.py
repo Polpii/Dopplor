@@ -338,6 +338,8 @@ class Pipeline:
         self._switch = 0
         #: Enregistrement de diagnostic (commande « trace ») : tout ce qui est calculé, image par image.
         self._trace: dict | None = None
+        #: Instants des étapes de l'image en cours (diagnostic du retard), pendant un enregistrement.
+        self._marks: dict[str, float] | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
 
     def start(self) -> "Pipeline":
@@ -390,7 +392,9 @@ class Pipeline:
 
     def _run(self, kind: str, frame: Frame, rois: list[Roi] | None, band: tuple[int, int] | None = None) -> list[Detection]:
         t0 = time.perf_counter()
+        self._mark(f"{kind}:début")
         dets = self.tasks[kind].detect(frame, rois, band)
+        self._mark(f"{kind}:détecté")
         if kind == "pose":
             dets = self._same_person(frame, self._near_enough(frame, self._pick_person(dets)))
         infer = (time.perf_counter() - t0) * 1000
@@ -399,7 +403,9 @@ class Pipeline:
         shown, space = self._to_reflection(kind, frame, dets)
         eye = self.mirror.eye_on_glass() if space == "screen" and self.mirror else None
         debug = self._debug if space == "screen" else None
+        self._mark(f"{kind}:reflet")
         self.publish(Result(kind, frame, shown, infer, rois is not None, space, eye, dets if space == "screen" else None, debug))
+        self._mark(f"{kind}:envoyé")
         return dets  # coordonnées image : servent aux zones de zoom
 
     def _steady(self, rois: list[Roi]) -> list[Roi]:
@@ -646,7 +652,22 @@ class Pipeline:
             })
         return out, "screen"
 
+    def _mark(self, step: str) -> None:
+        """Horodatage d'une étape (seulement pendant un enregistrement de diagnostic)."""
+        if self._marks is not None:
+            self._marks[step] = time.monotonic()
+
     def _process(self, frame: Frame) -> None:
+        if self._trace is not None:
+            self._marks = {"début": time.monotonic()}
+        try:
+            self._process_frame(frame)
+        finally:
+            if self._marks is not None:
+                self._record({"t": frame.t, "id": frame.id, "kind": "timing", "marks": self._marks})
+                self._marks = None
+
+    def _process_frame(self, frame: Frame) -> None:
         h, w = frame.rgb.shape[:2]
         pose = None
         if self.enabled["pose"]:

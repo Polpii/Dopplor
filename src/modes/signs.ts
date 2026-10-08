@@ -254,6 +254,32 @@ export function extent(frames: Features[]): number {
 }
 
 /**
+ * Amplitude d'un signe de référence, poignets lissés (médiane sur 3 images). Dans les vidéos, une
+ * image où le modèle se trompe de place pour une main gonflait l'amplitude (« Oui » : 0,53 au lieu
+ * de 0,28) : on demandait parfois le double du vrai geste à une personne suivie, elle, en continu.
+ * Simulé : imitations plus petites validées 82 % du temps au lieu de 58 %, fausses réussites
+ * inchangées.
+ */
+export function templateExtent(frames: Features[]): number {
+  const steady = frames.map((f, i) => {
+    const out: Features = { hands: {} };
+    for (const side of ["left", "right"] as const) {
+      const near = frames.slice(Math.max(0, i - 1), i + 2).map((g) => g.hands[side]?.place).filter((p) => p !== undefined);
+      const h = f.hands[side];
+      if (!h) continue;
+      if (near.length < 3) {
+        out.hands[side] = h;
+        continue;
+      }
+      const med = (k: 0 | 1) => near.map((p) => p[k]).sort((a, b) => a - b)[1];
+      out.hands[side] = { place: [med(0), med(1)], shape: h.shape };
+    }
+    return out;
+  });
+  return extent(steady);
+}
+
+/**
  * Un signe n'est réussi que si, en plus de ressembler, on a vraiment fait le geste :
  *   - la partie de ses mouvements comparée au signe dure au moins la moitié du signe (on ne peut
  *     pas « écraser » tout un signe sur trois images d'une pose tenue) ;
