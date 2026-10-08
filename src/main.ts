@@ -4,6 +4,7 @@ import { DanceMode } from "./modes/dance/dance-mode";
 import { FairyMode } from "./modes/fairy/fairy-mode";
 import { MirrorWorld } from "./modes/fairy/world";
 import { Menu3D, type ScreenPose } from "./modes/menu3d";
+import { CubeMode, type HandInput } from "./modes/cube/cube-mode";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -29,7 +30,7 @@ const hudExpression = $("hud-expression");
 const hudPrediction = $("hud-prediction");
 const hudMode = $("hud-mode");
 
-const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse", fairy: "fée" };
+const MODE_NAMES: Record<string, string> = { skeleton: "squelette", signs: "langue des signes", dance: "danse", fairy: "fée", cube: "cube" };
 
 /** Latence compensée par la prédiction (ms), réglable avec les flèches et retenue d'une fois sur l'autre. */
 const LEAD_KEY = "dopplor.predictionMs";
@@ -133,20 +134,22 @@ async function main(): Promise<void> {
   const occlusion = () => source.occlusion?.() ?? null;
   const fairy = new FairyMode(world, scene, () => source.frameSize(), occlusion);
   let skeleton = true;
-  let activity: "signs" | "dance" | "fairy" | null = null;
+  let activity: "signs" | "dance" | "fairy" | "cube" | null = null;
   const blank = new Scene(); // dessiné à la place de la personne quand le squelette est éteint
   const activeModes = () => [...(skeleton ? ["skeleton"] : []), ...(activity ? [activity] : [])];
   const choose = async (id: string) => {
     if (id === "skeleton") skeleton = !skeleton;
-    else if (id === "signs" || id === "dance" || id === "fairy") {
+    else if (id === "signs" || id === "dance" || id === "fairy" || id === "cube") {
       const next = activity === id ? null : id;
       if (activity === "signs") signs.exit();
       if (activity === "dance") dance.exit();
       if (activity === "fairy") fairy.exit();
+      if (activity === "cube") cube.exit();
       activity = next;
       if (activity === "signs") await signs.enter();
       if (activity === "dance") dance.enter();
       if (activity === "fairy") fairy.enter();
+      if (activity === "cube") cube.enter();
     }
     menu.setActive(activeModes());
     updateHud();
@@ -156,6 +159,7 @@ async function main(): Promise<void> {
     { id: "signs", label: "Langue des signes", icon: ICONS.hand },
     { id: "dance", label: "Danse", icon: ICONS.dance },
     { id: "fairy", label: "Fée", icon: ICONS.fairy },
+    { id: "cube", label: "Cube", icon: ICONS.cube },
   ];
   const menu = new Menu(
     items,
@@ -185,15 +189,38 @@ async function main(): Promise<void> {
     return { palm, shoulders, open };
   };
   const menu3d = new Menu3D(world, items, fairy, screenPose);
+  // Cubes : les mains du reflet dessiné (px CSS) et ce qu'elles font (pincement, poing).
+  const handInputs = (): HandInput[] => {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const out: HandInput[] = [];
+    for (const h of reflected.hands) {
+      if (h.lostAt !== null || !h.side) continue;
+      const px = (i: number): [number, number] => [h.points[i * 4] * W, h.points[i * 4 + 1] * H];
+      const idx = [0, 5, 9, 13, 17];
+      const state = menu.lastHands.find((s) => s.track.side === h.side);
+      out.push({
+        side: h.side,
+        tips: [4, 8, 12, 16, 20].map(px),
+        palm: [idx.reduce((a, i) => a + px(i)[0], 0) / 5, idx.reduce((a, i) => a + px(i)[1], 0) / 5],
+        wrist: px(0),
+        middle: px(9),
+        pinch: !!state?.pinch,
+        closed: !!state?.closed,
+      });
+    }
+    return out;
+  };
+  const cube = new CubeMode(world, handInputs);
   if (source.setOcclusion) menu.stage = menu3d;
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
-  menu.paused = () => activity === "fairy" && fairy.holdsHand;
+  menu.paused = () => (activity === "fairy" && fairy.holdsHand) || cube.holdsCube;
   fairy.busy = () => menu.open;
   if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance, __fairy: fairy });
   // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
   // des rendus et état des modes, aussi dans la version construite.
   const drawTimes: number[] = [];
-  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, menu, menu3d, world, drawTimes, source } });
+  Object.assign(window, { __dopplor: { scene, reflected, ghost, signs, dance, fairy, cube, menu, menu3d, world, drawTimes, source } });
   setInterval(() => {
     const now = performance.now();
     menu.update(scene, now);
@@ -255,11 +282,12 @@ async function main(): Promise<void> {
     const occ = occlusion();
     world.update(occ, now, screenSize());
     fairy.frame(now);
+    cube.frame(now);
     menu3d.frame(menu.view(now), now);
-    const show3d = fairy.visible || menu3d.visible;
+    const show3d = fairy.visible || menu3d.visible || cube.visible;
     // Carte complète dès que le poing s'allume (menu prêt à s'ouvrir) : elle est déjà là quand
     // les bulles naissent, qui ne passent ainsi jamais devant le corps.
-    source.setOcclusion?.(show3d || fairy.on || menu.animating ? 2 : 1);
+    source.setOcclusion?.(show3d || fairy.on || cube.on || menu.animating ? 2 : 1);
     world.setVisible(show3d);
     if (show3d) world.render();
     // Le suivi tourne toujours (les modes s'en servent) ; la personne n'est dessinée que si le
