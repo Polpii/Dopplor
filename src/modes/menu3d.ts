@@ -1,9 +1,9 @@
-// Le menu dans le reflet : les bulles sont des objets 3D dans l'espace derrière la vitre, en
-// couronne autour du haut du corps de la personne (au-dessus de la tête, à côté), à la
-// profondeur de son buste, vues depuis son œil. Elles suivent la personne (comme si elles
-// faisaient partie de son reflet) : même taille relative quand elle s'approche ou recule.
-// Là où elles touchent la silhouette, elles passent derrière ; la main qui monte les toucher
-// passe devant, comme avec un vrai objet.
+// Le menu dans le reflet : les bulles sont des objets 3D dans l'espace derrière la vitre, en arc
+// autour de la main qui l'ouvre (au-dessus de la paume, à sa profondeur), vues depuis l'œil de
+// la personne. L'arc est attaché au corps, pas à la main : il suit la personne quand elle se
+// déplace (même taille relative que son reflet quand elle s'approche ou recule), mais ne fuit
+// pas sous le doigt qui pointe. La main et le bras qui passent devant les bulles les cachent,
+// comme un vrai objet.
 //
 // Le menu (menu.ts) garde ses gestes et son rythme ; ici, seulement où sont les bulles et de
 // quoi elles ont l'air. La fée accompagne l'ouverture et la fermeture (fairy-mode.ts).
@@ -16,14 +16,14 @@ import type { MenuItem, MenuStage, MenuView, Stroke } from "./menu";
 /** Bulle (rayon de la géométrie, m) ; sa vraie taille suit la carrure (voir BODY_*). */
 const BUBBLE_R = 0.045;
 /**
- * À l'échelle du corps (en largeurs d'épaules, mesurées en 3D) : rayon d'une bulle, de la
- * couronne (centrée entre la poitrine et la tête), et à quelle distance derrière la poitrine.
+ * À l'échelle du corps (en largeurs d'épaules, mesurées en 3D) : rayon d'une bulle, de l'arc,
+ * hauteur du centre de l'arc au-dessus de la paume.
  */
 const BODY_BUBBLE = 0.17;
-const BODY_ARC = 1.15;
-const BODY_BEHIND = 0.1;
-/** La couronne s'enroule autour de la personne : les bulles des côtés un peu plus en arrière. */
-const BODY_WRAP = 0.3;
+const BODY_ARC = 0.8;
+const BODY_LIFT = 0.12;
+/** L'arc s'enroule un peu : les bulles des côtés légèrement plus en arrière. */
+const BODY_WRAP = 0.25;
 /** Suivi de la personne (part du chemin par image) : doux, les bulles ne tremblent pas. */
 const FOLLOW = 0.12;
 /** Écart entre deux bulles voisines sur l'arc. */
@@ -216,8 +216,10 @@ export class Menu3D implements MenuStage {
   /** Taille des bulles (× la géométrie) et largeur d'épaules (m), suivies doucement. */
   private size = 1;
   private shoulders = 0.4;
-  /** Centre de la couronne (suit la personne), recadrage pour rester dans l'écran, main qui a ouvert. */
+  /** Centre de l'arc (suit la personne), sa place par rapport à la poitrine (fixée à l'ouverture),
+   * recadrage pour rester dans l'écran, main qui a ouvert. */
   private anchor = new THREE.Vector3();
+  private offset = new THREE.Vector3();
   private shift = new THREE.Vector3();
   private side: "left" | "right" | null = null;
   /** Onde de choc (fermeture dans le poing, bulle qui éclate). */
@@ -276,14 +278,20 @@ export class Menu3D implements MenuStage {
     return this.opened || performance.now() < this.shownUntil;
   }
 
-  /** Ouvre la couronne autour de la personne ; faux si pas de 3D (pas calé, personne). */
+  /** Ouvre l'arc autour de la main ; faux si pas de 3D (pas calé, personne). */
   open(side: "left" | "right" | null, now: number): boolean {
     const occ = this.occlusion();
     if (!occ || now - occ.at > 500 || !this.world.ready) return false;
     this.side = side;
     this.shift.set(0, 0, 0);
+    // Arc au-dessus de la paume, retenu par rapport à la poitrine (il suivra le corps).
+    const body = occ.body;
+    const chest = reflected(body.chest);
+    const palm = side ? reflected(side === "left" ? body.lp : body.rp) : chest.clone().add(new THREE.Vector3(0, -0.05, 0.25));
+    const sw = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
+    this.offset.copy(palm).add(new THREE.Vector3(0, BODY_LIFT * sw, 0)).sub(chest);
     this.layout(occ, 1);
-    // Recadrage : la couronne reste dans l'écran (décalage gardé tant que le menu est ouvert).
+    // Recadrage : l'arc reste dans l'écran (décalage gardé tant que le menu est ouvert).
     for (let pass = 0; pass < 3; pass++) {
       let dx = 0;
       let dy = 0;
@@ -313,18 +321,17 @@ export class Menu3D implements MenuStage {
   }
 
   /**
-   * Place la couronne autour de la personne (`blend` : 1 tout de suite, sinon suivi doux) : au-
-   * dessus de la tête et à côté, à la profondeur du buste, à l'échelle de ses épaules. La paume
-   * de la main qui a ouvert (d'où le menu jaillit, où il se replie) et la place de la fée.
+   * Place l'arc (`blend` : 1 tout de suite, sinon suivi doux) : là où il a été ouvert par rapport
+   * à la poitrine, à l'échelle des épaules. La paume de la main qui a ouvert (d'où le menu
+   * jaillit, où il se replie) et la place de la fée.
    */
   private layout(occ: Occlusion, blend: number): void {
     const body = occ.body;
     const chest = reflected(body.chest);
-    const head = reflected(body.head);
     const sw = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
     this.shoulders = blend >= 1 ? sw : this.shoulders + (sw - this.shoulders) * blend;
     this.size = (BODY_BUBBLE * this.shoulders) / BUBBLE_R;
-    const target = new THREE.Vector3(chest.x, (chest.y + head.y) / 2, chest.z - BODY_BEHIND * this.shoulders);
+    const target = chest.clone().add(this.offset);
     if (blend >= 1) this.anchor.copy(target);
     else this.anchor.lerp(target, blend);
     const c = this.anchor.clone().add(this.shift);
