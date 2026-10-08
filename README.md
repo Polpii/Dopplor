@@ -36,7 +36,7 @@ A few things that took some trial and error:
 
 ## Modes
 
-At startup only the skeleton is on. Each mode is switched on and off from the menu: pick it to turn it on, pick it again to turn it off, and the bubbles of the modes that are on glow brighter. The skeleton can be added on top of the other modes; sign language and dance are activities, one at a time. In sign language and dance, your own skeleton is only drawn if the skeleton mode is on. `Escape` closes the menu, then stops the activity, then turns the skeleton off. The debug panel is hidden by default (`H`).
+At startup only the skeleton is on. Each mode is switched on and off from the menu: pick it to turn it on, pick it again to turn it off, and the bubbles of the modes that are on glow brighter. The skeleton can be added on top of the other modes; sign language, dance and the fairy are activities, one at a time. In these, your own skeleton is only drawn if the skeleton mode is on. `Escape` closes the menu, then stops the activity, then turns the skeleton off. The debug panel is hidden by default (`H`).
 
 To open the mode menu, make a fist with the palm facing the sky (it lights up), then open it in one go, as if throwing the menu up. The menu shoots out of your fingers. No waiting: the fist only needs to be there before the hand opens.
 
@@ -48,7 +48,8 @@ The menu is drawn by the same WebGL pipeline as the skeleton (neon strokes, same
 
 - **Skeleton**: the default, body + hands + face in neon.
 - **Sign language (LSF)**: the word to learn is shown at the top, a golden double of you signs it on loop, and a gauge shows how close you are. Get it right and it moves on to the next one. The double plays the sign smoothly at the screen's frame rate: the recordings are 15 frames a second with a few gaps, so frames are interpolated, missing hands are filled in, and at the end it holds the pose and glides back to the start instead of jumping. It keeps its side next to you and follows you gently. Stuck? It moves on by itself after 30 seconds. Do a word you've already learned and the mirror tells you which.
-- **Dance**: you dance side by side with the golden double, like in a dance class facing the mirror: when it raises its right arm, you raise your right arm. It invites you by raising its arms; raise both of yours (or press space) and the music starts, with a "3, 2, 1, Danse !" on the beat. The upcoming moves scroll in at the bottom as little neon figures and reach a marker right on the beat. Each marked pose gets a word above your head (Parfait, Super, Bien, Oups), sparks fly from your hands, your skeleton flashes gold on a perfect, and a combo multiplies the points. A halo pulses on the floor under each of you on every beat. At the end, a score and up to three stars; raise your arms to dance again.
+- **Dance**: the golden double stands right on your reflection, same feet and same size, so you just have to match it. It invites you by raising its arms; raise both of yours (or press space) and the music starts, with a "3, 2, 1, Danse !" on the beat. A faint trail shows where its hands are going over the next beat, and the next marked pose shows up as a barely visible echo that firms up as the beat gets close. The upcoming moves also scroll in at the bottom as little neon figures and reach a marker right on the beat. Each marked pose gets a word above your head (Parfait, Super, Bien, Oups), sparks fly from your hands, your skeleton flashes gold on a perfect, and a combo multiplies the points. At the end, a score and up to three stars; raise your arms to dance again.
+- **Fairy**: a little fairy of light lives behind the mirror. She flies around your reflection, in 3D, in the space behind the glass, and when she goes behind you she disappears behind your reflection, like a real object would. Raise a hand and she comes to rest above it with a little chime. With nobody there, she wanders in the middle of the mirror. To hide her, the server sends a depth map of your body as seen in the reflection: every depth pixel of your body is lifted to 3D and projected exactly like the skeleton.
 
 There's no public model for French Sign Language, and I didn't want to make signs up. The signs come from [Lingua Libre](https://lingualibre.org), where people record words in LSF and publish them on Wikimedia Commons under free licenses (CC0 / CC BY-SA). `scripts/import_lsf.py` downloads those videos, runs the same pose and hand models on them and keeps only the movement (upper body and both hands, 15 frames a second). Lingua Libre also has a lot of library vocabulary (conseiller, réservation…), so only about 30 simple everyday words are kept (`WORDS` in the script): greetings, please and thank you, questions, a few verbs and some animals. They're in `data/lsf/`. Credits are in [data/lsf/ATTRIBUTION.md](data/lsf/ATTRIBUTION.md), and the mirror shows who signed the word on screen.
 
@@ -133,6 +134,7 @@ server/
   vision.py          MediaPipe pipeline, hand/face crops from the skeleton
   orbbec.py          Femto Bolt through the Orbbec SDK: color, depth, accelerometer
   mirror.py          3D landmarks and where the eye sees their reflection
+  occlusion.py       the body as seen in the reflection, with its depth (fairy mode)
 src/
   main.ts            picks the source (Python server or browser), render loop, debug panel
   calibration.ts     calibration panel
@@ -146,6 +148,10 @@ src/
       dance-mode.ts  dance mode (flow, double, feedback, timeline)
       choreo.ts      moves, the double's skeleton, scoring
       music.ts       the generated music (Web Audio) and its clock
+    fairy/
+      fairy-mode.ts  fairy mode (where she flies, the raised hand)
+      fairy.ts       the fairy (glow, wings, sparkles)
+      world.ts       3D behind the glass (Three.js): eye perspective, occlusion by the reflection
   scene.ts           tracking, smoothing, expressions
   vision/
     remote.ts        landmarks from the Python server
