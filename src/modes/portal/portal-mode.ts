@@ -39,8 +39,9 @@ const PREDICT_S = 0.08;
 /** Vallée en contrebas du bord de la prairie (m), niveau de l'eau. */
 const VALLEY = -60;
 const WATER = VALLEY - 3.5;
-/** Soleil bas, un peu à droite de la vue (repère du paysage : x à droite, y en haut, -z au loin). */
-const SUN = new THREE.Vector3(0.62, 0.26, -0.74).normalize();
+/** Soleil bas, sur la droite et un peu derrière nous (lumière rasante sur les faces tournées vers
+ *  nous) (repère du paysage : x à droite, y en haut, -z au loin). */
+const SUN = new THREE.Vector3(0.8, 0.3, 0.3).normalize();
 /** Petites fées : couleurs ; les premières volent sur la prairie, les autres au-dessus du vide. */
 const FAIRY_TINTS = ["#73ccff", "#ffd36b", "#ff8fc8", "#8dff9e", "#c39bff", "#7fe8ff", "#ffb36b", "#ff9fe0"];
 const NEAR_FAIRIES = 5;
@@ -129,6 +130,7 @@ const PEAK = { x: 220, d: 2700, r: 300 };
 const FALLS = { x: riverX(640), d: 640, h: 120 };
 /** Seconde cascade, à droite (on la découvre en se penchant). */
 const FALLS2_X = 165;
+const FALLS_X = FALLS.x.toFixed(1);
 /** Bord du plateau (distance, m) : irrégulier, sauf là où tombe la grande cascade. */
 const plateauEdge = (x: number) => FALLS.d + 45 * noise(x * 0.012, 7.7) * smoothstep(25, 70, Math.abs(x - FALLS.x));
 const VILLAGE = { x: 45, d: 330, r: 55 };
@@ -709,6 +711,17 @@ export class PortalMode {
           vec3 rock = mix(vec3(0.17, 0.14, 0.11), vec3(0.34, 0.28, 0.21), fbm3(p * 0.05 + vec2(0.0, h * 0.1)));
           rock *= 0.7 + 0.45 * vnoise(vec2(h * 0.35, p.x * 0.004 + p.y * 0.004)) * (0.6 + 0.4 * vnoise(p * 0.08));
           float rockMask = max(smoothstep(0.28, 0.5, slope + (n1 - 0.5) * 0.2), smoothstep(${(VALLEY + 170).toFixed(1)}, ${(VALLEY + 260).toFixed(1)}, h + n1 * 40.0));
+          // Parois raides : fissures verticales, strates, mousse dans les replats, roche mouillée
+          // (plus sombre) de part et d'autre des cascades.
+          float steep = smoothstep(0.5, 0.8, slope);
+          float cracks = smoothstep(0.55, 0.85, vnoise(vec2(p.x * 0.09, h * 0.012)) * 0.7 + vnoise(vec2(p.x * 0.35, h * 0.04)) * 0.3);
+          float strata = 0.5 + 0.5 * sin(h * 0.55 + vnoise(vec2(p.x * 0.02, h * 0.05)) * 6.0);
+          rock *= mix(1.0, (0.78 + 0.3 * strata) * (1.0 - 0.45 * cracks), steep);
+          rock = mix(rock, vec3(0.42, 0.36, 0.27), steep * smoothstep(0.6, 0.9, vnoise(vec2(p.x * 0.03, h * 0.02))) * 0.5);
+          float moss = steep * smoothstep(0.55, 0.8, vnoise(vec2(p.x * 0.05, h * 0.09) + 4.0)) * (1.0 - smoothstep(${(VALLEY + 110).toFixed(1)}, ${(VALLEY + 130).toFixed(1)}, h));
+          rock = mix(rock, vec3(0.1, 0.16, 0.05), moss * 0.7);
+          float wet = steep * (exp(-pow((p.x - (${FALLS_X})) / 45.0, 2.0)) + exp(-pow((p.x - (${FALLS2_X.toFixed(1)})) / 22.0, 2.0)));
+          rock *= 1.0 - 0.45 * clamp(wet, 0.0, 1.0);
           col = mix(col, rock, rockMask);
           float snow = smoothstep(${(VALLEY + 300).toFixed(1)}, ${(VALLEY + 360).toFixed(1)}, h + n1 * 60.0) * (1.0 - smoothstep(0.45, 0.7, slope));
           col = mix(col, vec3(0.85, 0.87, 0.92), snow);
@@ -969,7 +982,7 @@ export class PortalMode {
     flag(0, 119, -8);
     // Grande tour secondaire.
     tower(-27, -12, 5, 60, 16, true);
-    castle.scale.setScalar(0.72);
+    castle.scale.setScalar(0.88);
     castle.position.set(CASTLE.x, h0 - 1, -CASTLE.d);
     castle.rotation.y = -0.15;
     this.add(castle, 1);
@@ -1222,10 +1235,10 @@ export class PortalMode {
     sheet.rotation.x = -Math.atan2(run, top - bottom);
     this.add(sheet, 3);
     const foot = new THREE.Vector3(x, WATER, -(edge - run - 14));
-    const sources = [-0.4, -0.15, 0.1, 0.35].map((f) => foot.clone().add(new THREE.Vector3(f * width, 0, (this.rnd() - 0.5) * 6)));
+    const sources = [-0.42, -0.25, -0.08, 0.08, 0.25, 0.42].map((f) => foot.clone().add(new THREE.Vector3(f * width, 0, (this.rnd() - 0.5) * 6)));
     this.add(
-      this.puffs(sources, 40, {
-        size: 9 * mistScale, grow: 34 * mistScale, rise: 70 * mistScale, drift: 10, speed: 0.06, color: new THREE.Color(0.86, 0.89, 0.93), alpha: 0.34,
+      this.puffs(sources, 30, {
+        size: 4 * mistScale, grow: 16 * mistScale, rise: 45 * mistScale, drift: 8, speed: 0.07, color: new THREE.Color(0.86, 0.89, 0.93), alpha: 0.26,
       }),
       4,
     );
@@ -1359,8 +1372,8 @@ export class PortalMode {
     const u = t * 0.05;
     return new THREE.Vector3(
       20 + 300 * Math.sin(u * 0.9) + 80 * Math.sin(u * 2.3 + 1),
-      150 + 40 * Math.sin(u * 1.3) + 15 * Math.sin(u * 3.1),
-      -(950 + 240 * Math.sin(u * 0.6 + 1) + 50 * Math.sin(u * 1.9)),
+      115 + 35 * Math.sin(u * 1.3) + 12 * Math.sin(u * 3.1),
+      -(720 + 170 * Math.sin(u * 0.6 + 1) + 40 * Math.sin(u * 1.9)),
     );
   }
 
