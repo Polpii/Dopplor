@@ -27,9 +27,9 @@ const PATH_BLEND_MS = 1800;
  * Taille selon la profondeur : plus grande devant la personne (plus près), plus petite derrière,
  * en plus de la perspective (trop faible seule pour qu'on sente qu'elle s'éloigne).
  */
-const DEPTH_SCALE = 1.5;
-const SCALE_MIN = 0.5;
-const SCALE_MAX = 1.8;
+const DEPTH_SCALE = 1.1;
+const SCALE_MIN = 0.55;
+const SCALE_MAX = 1.35;
 
 export class FairyMode {
   readonly id = "fairy";

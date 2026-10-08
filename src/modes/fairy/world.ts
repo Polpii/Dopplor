@@ -92,7 +92,7 @@ export function glowMaterial(shared: SharedUniforms, color: THREE.Color, sharpne
   });
 }
 
-/** Aile : une goutte translucide au bord lumineux, attachée par sa pointe (u = 0). */
+/** Aile : une feuille translucide au bord lumineux, attachée par sa base (u = 0). */
 export function wingMaterial(shared: SharedUniforms, color: THREE.Color): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { ...shared, uColor: { value: color }, uOpacity: { value: 1 } },
@@ -104,15 +104,17 @@ export function wingMaterial(shared: SharedUniforms, color: THREE.Color): THREE.
       varying vec2 vUv;
       varying float vBehind;
       void main() {
-        // Goutte : large au bout (u = 1), fine à l'attache (u = 0).
+        // Feuille arrondie : fine à l'attache (u = 0), large vers le milieu, pointe au bout.
         float u = vUv.x;
-        float halfWidth = 0.5 * sqrt(max(0.0, u)) * (1.0 - u * u * 0.35);
+        float halfWidth = 0.5 * pow(sin(3.14159 * pow(clamp(u, 0.0, 1.0), 0.7)), 0.75);
         float d = abs(vUv.y - 0.5) / max(halfWidth, 1e-3);
-        float inside = 1.0 - smoothstep(0.85, 1.0, d) ;
-        inside *= 1.0 - smoothstep(0.9, 1.0, u);
-        float rim = smoothstep(0.55, 0.95, d) * inside;
-        float a = (0.22 * inside + 0.9 * rim) * uOpacity * visibleBehind(vBehind);
-        gl_FragColor = vec4(uColor, a);
+        float inside = 1.0 - smoothstep(0.82, 1.0, d);
+        float rim = smoothstep(0.55, 0.97, d) * inside;
+        // Nervure centrale, très légère, et reflet irisé vers le bout.
+        float vein = (1.0 - smoothstep(0.0, 0.12, d)) * (1.0 - u) * 0.25;
+        vec3 color = mix(uColor, vec3(1.0, 0.86, 1.0), 0.45 * u);
+        float a = (0.13 * inside + 0.55 * rim + vein) * uOpacity * visibleBehind(vBehind);
+        gl_FragColor = vec4(color, a);
       }`,
     transparent: true,
     depthWrite: false,
