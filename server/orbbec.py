@@ -211,6 +211,13 @@ class OrbbecCamera(Source):
                 log.warning("caméra : plage de %s inconnue (%s)", name, e)
                 return None
 
+        for name in ("OB_PROP_COLOR_EXPOSURE_INT", "OB_PROP_COLOR_GAIN_INT"):
+            range_of(name)
+        pid = prop("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL")
+        try:
+            log.info("caméra : exposition automatique %s", dev.get_bool_property(pid))
+        except Exception as e:  # noqa: BLE001
+            log.warning("caméra : exposition automatique illisible (%s)", e)
         try_set("OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT", 0)
         # Temps de pose (unités de 100 µs) : au plus une image, un peu de marge pour la lecture.
         r = range_of("OB_PROP_COLOR_AE_MAX_EXPOSURE_INT")
