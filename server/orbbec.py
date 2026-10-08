@@ -178,55 +178,79 @@ class OrbbecCamera(Source):
             log.warning("anti-scintillement non réglé : %s", e)
 
     def _steady_frame_rate(self, fps: int) -> None:
-        """Cadence fixe même dans le noir : en exposition automatique, la caméra allonge le temps
-        de pose quand la pièce est sombre (écran du miroir noir, le soir) et tombait à 15, voire
-        2 images/s, d'où des mouvements en retard et saccadés. On interdit à l'exposition
-        automatique de ralentir la cadence et on plafonne son temps de pose à une image ; le gain
-        compense (image un peu plus bruitée la nuit, sans gêne pour la pose)."""
+        """Cadence fixe même dans le noir. En exposition automatique, la caméra allonge le temps
+        de pose quand la pièce est sombre (écran du miroir noir, le soir) : elle tombait à 15,
+        voire 2 images/s, d'où des mouvements en retard et saccadés. Ce modèle ne laisse pas
+        plafonner son exposition automatique : on la coupe et on la fait nous-mêmes (_expose),
+        temps de pose limité à une image, le gain complète."""
+        self._ae = None
         dev = self.pipe.get_device()
-
-        def prop(name: str):
-            return getattr(ob.OBPropertyID, name, None)
-
-        def try_set(name: str, value: int) -> None:
-            pid = prop(name)
-            if pid is None:
-                return
-            short = name.removeprefix("OB_PROP_COLOR_").lower()
-            try:
-                before = dev.get_int_property(pid)
-                dev.set_int_property(pid, value)
-                log.info("caméra : %s %d → %d", short, before, dev.get_int_property(pid))
-            except Exception as e:  # noqa: BLE001 - réglage absent de ce modèle : on fait sans
-                log.warning("caméra : %s non réglé (%s)", short, e)
-
-        def range_of(name: str):
-            pid = prop(name)
-            try:
-                r = dev.get_int_property_range(pid) if pid is not None else None
-                if r is not None:
-                    log.info("caméra : %s de %d à %d (actuel %d)", name.removeprefix("OB_PROP_COLOR_").lower(), r.min, r.max, r.cur)
-                return r
-            except Exception as e:  # noqa: BLE001
-                log.warning("caméra : plage de %s inconnue (%s)", name, e)
-                return None
-
-        for name in ("OB_PROP_COLOR_EXPOSURE_INT", "OB_PROP_COLOR_GAIN_INT"):
-            range_of(name)
-        pid = prop("OB_PROP_COLOR_AUTO_EXPOSURE_BOOL")
+        P = ob.OBPropertyID
         try:
-            log.info("caméra : exposition automatique %s", dev.get_bool_property(pid))
+            er = dev.get_int_property_range(P.OB_PROP_COLOR_EXPOSURE_INT)
+            gr = dev.get_int_property_range(P.OB_PROP_COLOR_GAIN_INT)
+            exp0 = dev.get_int_property(P.OB_PROP_COLOR_EXPOSURE_INT)
+            gain0 = dev.get_int_property(P.OB_PROP_COLOR_GAIN_INT)
+        except Exception as e:  # noqa: BLE001 - réglages absents : on garde l'automatique
+            log.warning("caméra : exposition manuelle impossible (%s)", e)
+            return
+        log.info("caméra : temps de pose %d (de %d à %d), gain %d (de %d à %d)", exp0, er.min, er.max, gain0, gr.min, gr.max)
+        # Unités du temps de pose : 100 µs sur ce modèle (UVC). Une image à `fps` = 10000/fps.
+        cap = max(er.min, min(er.max, int(10000 / fps * 0.9)))
+        try:
+            dev.set_bool_property(P.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, False)
+            exp = max(er.min, min(cap, exp0))
+            dev.set_int_property(P.OB_PROP_COLOR_EXPOSURE_INT, exp)
+            dev.set_int_property(P.OB_PROP_COLOR_GAIN_INT, gain0)
         except Exception as e:  # noqa: BLE001
-            log.warning("caméra : exposition automatique illisible (%s)", e)
-        try_set("OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT", 0)
-        # Temps de pose (unités de 100 µs) : au plus une image, un peu de marge pour la lecture.
-        r = range_of("OB_PROP_COLOR_AE_MAX_EXPOSURE_INT")
-        if r is not None:
-            budget = int(10000 / fps * 0.9)
-            try_set("OB_PROP_COLOR_AE_MAX_EXPOSURE_INT", max(r.min, min(r.max, budget)))
-        g = range_of("OB_PROP_COLOR_AE_MAX_GAIN_INT")
-        if g is not None:
-            try_set("OB_PROP_COLOR_AE_MAX_GAIN_INT", g.max)
+            log.warning("caméra : exposition manuelle refusée (%s)", e)
+            try:
+                dev.set_bool_property(P.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, True)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self._ae = {"dev": dev, "exp": float(exp), "gain": float(gain0), "cap": cap, "emin": er.min, "gmin": gr.min, "gmax": gr.max, "at": 0.0, "set": (exp, gain0)}
+        log.info("caméra : exposition gérée par Dopplor (pose ≤ %d, soit %.1f ms)", cap, cap / 10)
+
+    def _expose(self, yuyv: np.ndarray, t: float) -> None:
+        """Exposition automatique maison (toutes les 0,3 s) : luminosité moyenne visée au centre
+        de l'image (là où est la personne) ; plus sombre → temps de pose d'abord (jusqu'à une
+        image), puis gain ; plus clair → gain d'abord, puis temps de pose."""
+        ae = self._ae
+        if ae is None or t - ae["at"] < 0.3:
+            return
+        ae["at"] = t
+        h, w = yuyv.shape[:2]
+        luma = float(yuyv[h // 6 : h * 5 // 6 : 8, w // 6 : w * 5 // 6 : 8, 0].mean())
+        ratio = 115.0 / max(luma, 4.0)
+        if 0.88 < ratio < 1.14:
+            return
+        k = ratio ** 0.5  # la moitié de l'écart à chaque pas : pas d'oscillation
+        exp, gain = ae["exp"], ae["gain"]
+        if k > 1:
+            exp2 = min(ae["cap"], exp * k)
+            rest = k * exp / exp2
+            gain = min(ae["gmax"], max(ae["gmin"], gain * rest if gain > 0 else ae["gmin"] + 8))
+            exp = exp2
+        else:
+            gain2 = max(ae["gmin"], gain * k)
+            rest = k * gain / gain2 if gain2 > 0 else k
+            exp = max(ae["emin"], exp * rest)
+            gain = gain2
+        ae["exp"], ae["gain"] = exp, gain
+        want = (int(round(exp)), int(round(gain)))
+        if want == ae["set"]:
+            return
+        P = ob.OBPropertyID
+        try:
+            if want[0] != ae["set"][0]:
+                ae["dev"].set_int_property(P.OB_PROP_COLOR_EXPOSURE_INT, want[0])
+            if want[1] != ae["set"][1]:
+                ae["dev"].set_int_property(P.OB_PROP_COLOR_GAIN_INT, want[1])
+            ae["set"] = want
+        except Exception as e:  # noqa: BLE001
+            log.warning("caméra : réglage d'exposition refusé (%s)", e)
+            ae["at"] = t + 5
 
     def _depth_of(self, frames) -> np.ndarray | None:
         """Profondeur en mètres, alignée pixel à pixel sur l'image couleur."""
@@ -288,6 +312,7 @@ class OrbbecCamera(Source):
             t = time.monotonic()
             wall = time.time() * 1000
             yuyv = np.frombuffer(color.get_data(), np.uint8).reshape(color.get_height(), color.get_width(), 2)
+            self._expose(yuyv, t)
             rgb = cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUY2)
             future: Future = self._aligner.submit(self._depth_of, frames)
             self._publish(rgb, t, wall, lambda f=future: f.result(timeout=0.2))
