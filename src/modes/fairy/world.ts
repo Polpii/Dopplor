@@ -186,6 +186,9 @@ export class MirrorWorld {
   private occTexture: THREE.DataTexture;
   private eye: THREE.Vector3 | null = null;
   private eyeAt = 0;
+  /** Point de vue imposé par un mode à partir de l'œil suivi (le portail : vue neutre tant que
+   *  personne n'est stable devant), sinon l'œil lui-même. */
+  viewEye: ((eye: THREE.Vector3) => THREE.Vector3) | null = null;
   private screen: Vec3 | null = null;
 
   /** `resolution` : part de la définition de l'écran (lueurs douces : la moitié suffit). */
@@ -282,6 +285,11 @@ export class MirrorWorld {
     this.updateCamera();
   }
 
+  /** Œil suivi (lissé), indépendamment du point de vue imposé. */
+  get trackedEye(): THREE.Vector3 | null {
+    return this.eye;
+  }
+
   /** Largeur, hauteur de l'écran et écart vitre/dalle (m). */
   get screenMeters(): Vec3 {
     return this.screen ?? [0.62, 1.1, 0];
@@ -304,7 +312,7 @@ export class MirrorWorld {
     if (!this.eye || !this.screen) return;
     // Perspective décentrée : l'œil regarde à travers le rectangle de l'écran (plan z = -écart).
     const [sw, sh, gap] = this.screen;
-    const e = this.eye;
+    const e = this.viewEye ? this.viewEye(this.eye) : this.eye;
     // Plan proche juste avant la vitre (rien n'est devant elle) : bonne précision de profondeur
     // jusqu'au lointain du portail.
     const near = Math.max(0.05, (e.z + gap) * 0.8);

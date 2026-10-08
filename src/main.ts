@@ -205,7 +205,9 @@ async function main(): Promise<void> {
     return out;
   };
   const bubbles = new BubbleMode(world, fingertips);
-  const portal = new PortalMode(world);
+  const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null));
+  // Le paysage du portail se calcule à l'avance (quelques centaines de ms), pas à l'ouverture.
+  setTimeout(() => portal.prepare(), 5000);
   if (source.setOcclusion) menu.stage = menu3d;
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
   menu.paused = () => activity === "fairy" && fairy.holdsHand;
