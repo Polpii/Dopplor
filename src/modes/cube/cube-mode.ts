@@ -105,7 +105,9 @@ function cubeMaterial(shared: SharedUniforms): THREE.ShaderMaterial {
           vec3 d = vLocal * uSize - uContacts[i].xyz;
           spot += uContacts[i].w * exp(-dot(d, d) / (0.025 * 0.025));
         }
-        float fill = 0.05 + 0.22 * uLight;
+        // Verre teinté : un voile sur les faces, plus dense vers les arêtes (plus d'épaisseur de verre
+        // traversée par le regard), qui s'allume avec le cube.
+        float fill = (0.1 + 0.12 * smoothstep(0.3, 0.95, e)) + 0.25 * uLight;
         vec3 c = col * (edge * (0.9 + 1.2 * uLight) + fill + corner * 0.6) + mix(col, vec3(1.0), 0.6) * spot * 1.6;
         float alpha = clamp(edge * 0.9 + fill + spot, 0.0, 1.0);
         float v = visible() * uAppear;
