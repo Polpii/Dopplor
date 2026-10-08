@@ -116,12 +116,18 @@ export class Menu {
     }
   }
 
+  /** Geste d'ouverture en pause (ex. la fée est posée sur une main tendue paume vers le ciel). */
+  paused: () => boolean = () => false;
+
   update(scene: Scene, now: number): void {
     const [w, h] = this.frame();
     const hands = handStates(scene, now, w, h);
     for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
-      const { triggered, ready: seed } = this.bloom.update(hands, now);
+      // En pause : rien ne s'arme ; il faudra refaire le geste en entier ensuite.
+      const paused = this.paused();
+      if (paused) this.bloom.reset();
+      const { triggered, ready: seed } = paused ? { triggered: null, ready: null } : this.bloom.update(hands, now);
       const ready = now - this.closedAt > 800;
       if (triggered && ready) {
         this.seed.target = 0;

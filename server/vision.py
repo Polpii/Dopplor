@@ -365,6 +365,8 @@ class Pipeline:
         self.on_occlusion: Callable[[dict, bytes], None] | None = None
         self._occ_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="silhouette")
         self._occ_busy = False
+        #: Centre de chaque paume (repère caméra) et quand il a été mesuré.
+        self._palms: dict[str, tuple[float, np.ndarray]] = {}
         #: Instants des étapes de l'image en cours (diagnostic du retard), pendant un enregistrement.
         self._marks: dict[str, float] | None = None
         self._thread = threading.Thread(target=self._loop, name="inference", daemon=True)
@@ -611,9 +613,9 @@ class Pipeline:
         self.occlusion = on
         self.tasks["pose"].segment = on
 
-    def _send_occlusion(self, depth: np.ndarray, mask: np.ndarray | None, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int]) -> None:
+    def _send_occlusion(self, depth: np.ndarray, mask: np.ndarray | None, pts: np.ndarray, xyz: np.ndarray, size: tuple[int, int], palms: dict) -> None:
         try:
-            occ = occlusion_map(self.mirror, depth, mask, pts, xyz, size)
+            occ = occlusion_map(self.mirror, depth, mask, pts, xyz, size, palms)
             if occ is not None and self.on_occlusion:
                 self.on_occlusion(*occ)
         except Exception:  # noqa: BLE001 - une silhouette ratée ne doit rien arrêter
@@ -663,6 +665,14 @@ class Pipeline:
         if kind == "pose":
             self._pose_xyz = lifted[0].xyz if lifted[0] is not None else None
             self._pose_pts = dets[0].points
+        if kind == "hands":
+            # Centre de chaque paume (poignet + bases des doigts), pour la fée qui s'y pose : bien
+            # plus juste que les points de main du squelette, dont la profondeur se lit souvent
+            # sur le torse derrière la main.
+            for d, l in zip(dets, lifted):
+                side = d.key.split("/")[-1] if d.key else None
+                if side in ("left", "right") and l is not None:
+                    self._palms[side] = (time.monotonic(), l.xyz[[0, 5, 9, 13, 17]].mean(axis=0))
         # L'œil : toujours les yeux du squelette. Passer de l'iris du visage (quand il est vu) aux
         # yeux du squelette décalait l'œil estimé de ~7 cm, donc tout le squelette dessiné de ~3 cm
         # d'un coup, à chaque fois que le visage apparaissait ou disparaissait (enregistré).
@@ -677,7 +687,8 @@ class Pipeline:
         if kind == "pose" and self.occlusion and self.on_occlusion and depth is not None and lifted[0] is not None and not self._occ_busy:
             h_img, w_img = frame.rgb.shape[:2]
             self._occ_busy = True
-            self._occ_pool.submit(self._send_occlusion, depth, self.tasks["pose"].mask, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img))
+            palms = {side: xyz for side, (at, xyz) in self._palms.items() if time.monotonic() - at < 0.15}
+            self._occ_pool.submit(self._send_occlusion, depth, self.tasks["pose"].mask, dets[0].points.copy(), lifted[0].xyz.copy(), (w_img, h_img), palms)
         out = []
         for d, l in zip(dets, lifted):
             uv = m.project(l.xyz) if l is not None else None

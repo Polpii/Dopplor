@@ -45,8 +45,10 @@ const FRONT_DEPTH = 0.45;
 const FLAT_REACH = 1.45;
 const FLAT_UP = 0.3;
 const FLAT_MS = 300;
-/** La main n'est plus à plat (fermée, retournée, baissée) depuis ce temps : elle s'envole. */
-const LEAVE_MS = 350;
+/** La main n'est plus tendue (fermée, retournée, baissée, perdue) depuis ce temps : elle s'envole. */
+const LEAVE_MS = 600;
+/** Paume encore assez vers le ciel pour la garder (au-dessous : retournée). */
+const HOLD_UP = -0.15;
 /** Main qui bouge plus vite que ça (m/s) : elle s'envole d'un coup. */
 const STARTLE_SPEED = 1.6;
 /** Elle remarque la main, puis vient en spirale (ms). */
@@ -58,8 +60,8 @@ const PERCH_HEIGHT = 0.04;
 /** Autre main à plat à moins de ça de la première (m) : elle saute dessus. */
 const HOP_TO_OTHER = 0.25;
 const TAKEOFF_MS = 900;
-/** Posée devant le corps : sa lumière n'est pas cachée par la main qui la porte (m). */
-const PERCH_BIAS = 0.08;
+/** Posée (ou en train d'arriver) : sa lumière n'est pas cachée par la main qui la porte (m). */
+const PERCH_BIAS = 0.25;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const smooth = (k: number) => k * k * (3 - 2 * k);
@@ -104,6 +106,8 @@ export class FairyMode {
   private nextHop = 0;
   private hopAt = 0;
   private rest = 0;
+  /** Quand elle a quitté une main pour la dernière fois. */
+  private leftHandAt = -Infinity;
   private hands: Record<Side, HandInfo> = {
     left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
     right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0 },
@@ -126,6 +130,13 @@ export class FairyMode {
 
   get animating(): boolean {
     return this.active;
+  }
+
+  /** Elle s'occupe d'une main (la voit, y vient, y est posée, vient d'en partir). */
+  get holdsHand(): boolean {
+    if (!this.active) return false;
+    if (this.mood === "notice" || this.mood === "approach" || this.mood === "perched") return true;
+    return performance.now() - this.leftHandAt < 1500;
   }
 
   enter(now = performance.now()): void {
@@ -178,7 +189,8 @@ export class FairyMode {
     this.pos.addScaledVector(this.vel, dt);
 
     this.rest += ((perched ? 1 : 0) - this.rest) * (1 - Math.exp(-dt * 4));
-    this.world.shared.uBias.value = PERCH_BIAS * this.rest;
+    const arriving = this.mood === "approach" ? smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS)) : 0;
+    this.world.shared.uBias.value = PERCH_BIAS * Math.max(this.rest, arriving);
     // Vol stationnaire : un léger tremblé vertical (pas posée).
     const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
     const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
@@ -198,14 +210,13 @@ export class FairyMode {
       const s = states.find((x) => x.track.side === side);
       if (s) info.ups = [...info.ups, s.palmUp].slice(-3);
       // Orientation de la paume bruitée (mains petites à 2 m) : la plus haute des 3 dernières.
-      const flat = !!s && present && s.extended >= 3 && s.reach >= FLAT_REACH && Math.max(...info.ups) >= FLAT_UP && s.anchored && s.height < 1.2 && s.height > -1.2;
-      if (flat) {
-        info.flatSince ||= now;
-        info.notFlatSince = 0;
-      } else {
-        info.flatSince = 0;
-        info.notFlatSince ||= now;
-      }
+      // Pour venir : vraie main à plat. Pour rester : main pas fermée, pas retournée, pas
+      // baissée (un doigt mal vu une image ne doit pas la faire partir).
+      const up = info.ups.length ? Math.max(...info.ups) : -1;
+      const flat = !!s && present && s.extended >= 3 && s.reach >= FLAT_REACH && up >= FLAT_UP && s.anchored && Math.abs(s.height) < 1.2;
+      const holding = !!s && present && !s.closed && up > HOLD_UP && s.anchored && s.height < 1.4;
+      info.flatSince = flat ? info.flatSince || now : 0;
+      info.notFlatSince = holding ? 0 : info.notFlatSince || now;
       if (occ && present) {
         const palm = reflected(side === "left" ? occ.body.lp : occ.body.rp);
         if (info.palm && occ.at !== info.palmAt) {
@@ -280,7 +291,8 @@ export class FairyMode {
       case "notice": {
         // Elle a vu la main : petit tour sur elle-même, sur place.
         const spot = this.perchSpot(this.perch!, now);
-        if (!spot || this.hands[this.perch!].notFlatSince) return this.backToOrbit(now, head, hips, t, dt);
+        const gone = this.hands[this.perch!].notFlatSince;
+        if (!spot || (gone && now - gone > LEAVE_MS)) return this.backToOrbit(now, head, hips, t, dt);
         if (since > NOTICE_MS) {
           this.from.copy(this.pos);
           this.fromAngle = Math.atan2(this.pos.z - spot.z, this.pos.x - spot.x);
@@ -345,12 +357,14 @@ export class FairyMode {
     this.fairy?.sparkle(startled ? 45 : 20, startled ? 2.2 : 1.0);
     this.chime(startled ? [2637, 2093, 1568] : [1760, 2349]);
     this.perch = null;
+    this.leftHandAt = now;
     this.setMood("takeoff", now);
     return this.pos.clone();
   }
 
   private backToOrbit(now: number, head: THREE.Vector3, hips: THREE.Vector3, t: number, dt: number): THREE.Vector3 {
     this.perch = null;
+    this.leftHandAt = now;
     this.setMood("orbit", now);
     return this.orbit(head, hips, now, t, dt);
   }

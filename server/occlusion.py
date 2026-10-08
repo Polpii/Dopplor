@@ -69,10 +69,11 @@ def _project(X: np.ndarray, K: np.ndarray, dist: np.ndarray) -> np.ndarray:
     return np.stack([K[0, 0] * xd + K[0, 2], K[1, 1] * yd + K[1, 2]], axis=1).astype(np.float32)
 
 
-def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int]) -> tuple[dict, bytes] | None:
+def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: np.ndarray, pose_xyz: np.ndarray, image_size: tuple[int, int], palms: dict | None = None) -> tuple[dict, bytes] | None:
     """Carte du reflet de la personne (GRID_H × GRID_W × 2 octets : distance, couverture) et ce dont la page
     a besoin pour placer sa 3D au même endroit : œil, taille de l'écran, quelques points du corps
-    (repère du miroir, en mètres). `mask` : masque du corps (image tournée, demi-définition)."""
+    (repère du miroir, en mètres). `mask` : masque du corps (image tournée, demi-définition).
+    `palms` : centre des paumes mesuré par le modèle des mains (repère caméra), s'il est récent."""
     source = mirror.source
     model = source.model
     E = mirror.state.eye
@@ -158,6 +159,12 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
     to_m = lambda i: (pose_xyz[i] @ R.T + t)  # noqa: E731
     mid = lambda a, b: ((to_m(a) + to_m(b)) / 2)  # noqa: E731
     r3 = lambda p: [round(float(x), 4) for x in p]  # noqa: E731
+    palms = palms or {}
+
+    def palm(side: str, fallback: tuple[int, int, int]) -> np.ndarray:
+        if side in palms and np.all(np.isfinite(palms[side])):
+            return palms[side] @ R.T + t
+        return sum(to_m(i) for i in fallback) / 3
     header = {
         "type": "occlusion",
         "w": GRID_W,
@@ -174,9 +181,10 @@ def occlusion_map(mirror, depth: np.ndarray, mask: np.ndarray | None, pose_pts: 
             "rw": r3(to_m(16)),
             "ls": r3(to_m(11)),
             "rs": r3(to_m(12)),
-            # Centre de chaque paume : poignet, base de l'auriculaire et de l'index du squelette.
-            "lp": r3((to_m(15) + to_m(17) + to_m(19)) / 3),
-            "rp": r3((to_m(16) + to_m(18) + to_m(20)) / 3),
+            # Centre de chaque paume : mesuré par le modèle des mains, sinon d'après les points de
+            # main du squelette (poignet, bases de l'auriculaire et de l'index).
+            "lp": r3(palm("left", (15, 17, 19))),
+            "rp": r3(palm("right", (16, 18, 20))),
         },
         "vis": {"lw": bool(pose_pts[15, 3] > 0.5), "rw": bool(pose_pts[16, 3] > 0.5)},
     }
