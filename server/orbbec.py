@@ -245,6 +245,9 @@ class OrbbecCamera(Source):
             ae = exp = gain = f"? ({e})"
         span = (ts - d["ts0"]) / 1e6 if ts is not None and d["ts0"] is not None else 0
         ci, di = np.diff(d["ci"]), np.diff(d["di"])
+        am = getattr(self, "_align_ms", [])
+        self._align_ms = []
+        log.info("diag recalage : %d en 3 s, %.1f ms en moyenne, max %.1f ; file %d", len(am), float(np.mean(am)) if am else 0, max(am) if am else 0, self._aligner._work_queue.qsize())
         log.info("diag caméra : %.1f images/s reçues, %.1f selon la caméra ; auto %s, pose %s, gain %s ; sauts d'index couleur %s profondeur %s", d["n"] / (t - d["at"]), (d["n"] - 1) / span if span > 0 else 0, ae, exp, gain, np.bincount(ci).tolist() if len(ci) else [], np.bincount(di).tolist() if len(di) else [])
         self._dg = None
 
@@ -291,7 +294,9 @@ class OrbbecCamera(Source):
 
     def _depth_of(self, frames) -> np.ndarray | None:
         """Profondeur en mètres, alignée pixel à pixel sur l'image couleur."""
+        t0 = time.perf_counter()
         aligned = self._align.process(frames)
+        self._align_ms = getattr(self, "_align_ms", []) + [(time.perf_counter() - t0) * 1000]
         if not aligned:
             return None
         depth = aligned.as_frame_set().get_depth_frame()
