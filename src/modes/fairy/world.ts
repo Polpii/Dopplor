@@ -28,13 +28,20 @@ uniform sampler2D uOcc;
 uniform vec2 uRes;
 uniform float uScale;
 uniform float uHasOcc;
-// 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
-float visibleBehind(float zBehind) {
-  if (uHasOcc < 0.5) return 1.0;
-  vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
+uniform vec2 uCell;
+float visibleAt(vec2 uv, float zBehind) {
   float code = texture2D(uOcc, uv).r * 255.0;
   if (code > 250.0) return 1.0;
   return smoothstep(-0.05, 0.05, code * uScale - zBehind);
+}
+// 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
+// Moyenne de 5 lectures autour du point : un bord doux au lieu des marches de la grille.
+float visibleBehind(float zBehind) {
+  if (uHasOcc < 0.5) return 1.0;
+  vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
+  vec2 c = uCell * 0.7;
+  return (visibleAt(uv, zBehind) * 2.0 + visibleAt(uv + vec2(c.x, 0.0), zBehind) + visibleAt(uv - vec2(c.x, 0.0), zBehind)
+    + visibleAt(uv + vec2(0.0, c.y), zBehind) + visibleAt(uv - vec2(0.0, c.y), zBehind)) / 6.0;
 }
 `;
 
@@ -54,6 +61,7 @@ export interface SharedUniforms {
   uRes: { value: THREE.Vector2 };
   uScale: { value: number };
   uHasOcc: { value: number };
+  uCell: { value: THREE.Vector2 };
   [name: string]: THREE.IUniform;
 }
 
@@ -96,12 +104,12 @@ export function wingMaterial(shared: SharedUniforms, color: THREE.Color): THREE.
       void main() {
         // Goutte : large au bout (u = 1), fine à l'attache (u = 0).
         float u = vUv.x;
-        float half = 0.5 * sqrt(max(0.0, u)) * (1.0 - u * u * 0.35);
-        float d = abs(vUv.y - 0.5) / max(half, 1e-3);
+        float halfWidth = 0.5 * sqrt(max(0.0, u)) * (1.0 - u * u * 0.35);
+        float d = abs(vUv.y - 0.5) / max(halfWidth, 1e-3);
         float inside = 1.0 - smoothstep(0.85, 1.0, d) ;
         inside *= 1.0 - smoothstep(0.9, 1.0, u);
         float rim = smoothstep(0.55, 0.95, d) * inside;
-        float a = (0.12 * inside + 0.55 * rim) * uOpacity * visibleBehind(vBehind);
+        float a = (0.22 * inside + 0.9 * rim) * uOpacity * visibleBehind(vBehind);
         gl_FragColor = vec4(uColor, a);
       }`,
     transparent: true,
@@ -174,6 +182,7 @@ export class MirrorWorld {
       uRes: { value: new THREE.Vector2(1, 1) },
       uScale: { value: 0.02 },
       uHasOcc: { value: 0 },
+      uCell: { value: new THREE.Vector2(1 / 108, 1 / 192) },
     };
     this.camera.matrixAutoUpdate = false;
     this.resize();
@@ -219,6 +228,7 @@ export class MirrorWorld {
       (this.occTexture.image.data as Uint8Array).set(occ.grid);
       this.occTexture.needsUpdate = true;
       this.shared.uScale.value = occ.scale;
+      this.shared.uCell.value.set(1 / occ.w, 1 / occ.h);
     }
     this.shared.uHasOcc.value = fresh ? 1 : 0;
   }

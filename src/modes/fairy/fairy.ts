@@ -39,10 +39,10 @@ export class Fairy {
     // Ailes : deux grandes en haut, deux petites en bas, attachées au centre.
     const wingColor = new THREE.Color(0.75, 0.92, 1.0);
     for (const [side, lift, length, width] of [
-      [1, 0.55, 0.11, 0.06],
-      [-1, 0.55, 0.11, 0.06],
-      [1, -0.45, 0.075, 0.045],
-      [-1, -0.45, 0.075, 0.045],
+      [1, 0.55, 0.13, 0.07],
+      [-1, 0.55, 0.13, 0.07],
+      [1, -0.45, 0.09, 0.05],
+      [-1, -0.45, 0.09, 0.05],
     ] as const) {
       const geo = new THREE.PlaneGeometry(length, width);
       geo.translate(length / 2, 0, 0); // pivot à la pointe
