@@ -250,6 +250,7 @@ class OrbbecCamera(Source):
             if want[1] != ae["set"][1]:
                 ae["dev"].set_int_property(P.OB_PROP_COLOR_GAIN_INT, want[1])
             ae["set"] = want
+            log.info("caméra : pose %d, gain %d (luminosité %.0f)", want[0], want[1], luma)
         except Exception as e:  # noqa: BLE001
             log.warning("caméra : réglage d'exposition refusé (%s)", e)
             ae["at"] = t + 5
