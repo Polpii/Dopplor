@@ -192,18 +192,23 @@ class OrbbecCamera(Source):
             pid = prop(name)
             if pid is None:
                 return
+            short = name.removeprefix("OB_PROP_COLOR_").lower()
             try:
-                if dev.is_property_supported(pid, ob.OBPermissionType.PERMISSION_WRITE):
-                    dev.set_int_property(pid, value)
-                    log.info("caméra : %s = %d", name.removeprefix("OB_PROP_COLOR_").lower(), dev.get_int_property(pid))
+                before = dev.get_int_property(pid)
+                dev.set_int_property(pid, value)
+                log.info("caméra : %s %d → %d", short, before, dev.get_int_property(pid))
             except Exception as e:  # noqa: BLE001 - réglage absent de ce modèle : on fait sans
-                log.warning("caméra : %s non réglé (%s)", name, e)
+                log.warning("caméra : %s non réglé (%s)", short, e)
 
         def range_of(name: str):
             pid = prop(name)
             try:
-                return dev.get_int_property_range(pid) if pid is not None else None
-            except Exception:  # noqa: BLE001
+                r = dev.get_int_property_range(pid) if pid is not None else None
+                if r is not None:
+                    log.info("caméra : %s de %d à %d (actuel %d)", name.removeprefix("OB_PROP_COLOR_").lower(), r.min, r.max, r.cur)
+                return r
+            except Exception as e:  # noqa: BLE001
+                log.warning("caméra : plage de %s inconnue (%s)", name, e)
                 return None
 
         try_set("OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT", 0)
