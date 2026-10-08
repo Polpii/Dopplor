@@ -143,12 +143,16 @@ export class Menu {
     }
   }
 
+  /** Dernier état des mains (diagnostic du geste, enregistrement sur le miroir). */
+  lastHands: HandState[] = [];
+
   /** Geste d'ouverture en pause (ex. la fée est posée sur une main tendue paume vers le ciel). */
   paused: () => boolean = () => false;
 
   update(scene: Scene, now: number): void {
     const [w, h] = this.frame();
     const hands = handStates(scene, now, w, h);
+    this.lastHands = hands;
     for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
       // En pause : rien ne s'arme ; il faudra refaire le geste en entier ensuite.
