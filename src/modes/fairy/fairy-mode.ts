@@ -379,6 +379,12 @@ export class FairyMode {
       for (const o of this.fairy.objects) o.visible = false;
       return;
     }
+    // Sur une main (elle s'y pose, y est posée, ou sur la main à plat du menu) : jamais découpée
+    // par la main qui la porte. Sinon, cachée derrière le corps comme d'habitude.
+    const s = this.script;
+    const landing = this.mood === "approach" && now - this.moodSince > APPROACH_MS * 0.5;
+    const onHand = (this.active && (this.mood === "perched" || landing)) || (s?.kind === "hold" && s.onPalm && s.fold <= 0.02);
+    this.fairy.occlusion.value = onHand ? 0 : this.world.shared.uHasOcc.value;
     const direct = this.direct;
     const scriptTarget = this.scripted(now, t, dt);
     if (scriptTarget && direct) {
