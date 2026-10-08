@@ -219,7 +219,8 @@ async function main(): Promise<void> {
     const due = now - lastDraw >= 1000 / MAX_RENDER_FPS - 0.5;
     // Le double avance à la cadence de l'écran (60 Hz), pas plus : au-delà, rien de plus ne
     // s'affiche et la carte graphique est prise à l'inférence (mesuré : pose 12 → 14,5 ms).
-    const ghostDue = now - lastGhost >= 1000 / GHOST_FPS - 0.5;
+    // Synchronisé sur l'écran, chaque image affichée le fait avancer.
+    const ghostDue = !noVsync || now - lastGhost >= 1000 / GHOST_FPS - 0.5;
     if (ghostDue && (signs.animating || dance.animating)) {
       lastGhost = now;
       if (signs.animating) signs.animate(now);

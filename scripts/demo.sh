@@ -54,12 +54,13 @@ curl -sf "http://127.0.0.1:$PORT/api/info" >/dev/null || { echo "Le serveur ne r
 command -v xdotool >/dev/null && xdotool key Escape 2>/dev/null || true
 SCREEN=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}' | tr x ,)
 
-# Sans synchronisation verticale : l'image part vers l'écran dès qu'elle est prête, au lieu
-# d'attendre le prochain rafraîchissement (jusqu'à ~16 ms de gagnés à 60 Hz). Contrepartie
-# possible : une « déchirure » horizontale sur les mouvements rapides. DOPPLOR_VSYNC=1 la remet.
+# Synchronisé sur le rafraîchissement de l'écran (60 Hz) : une image par rafraîchissement, ni
+# image doublée ni déchirure, le mouvement est régulier (le retard est compensé par la
+# prédiction). DOPPLOR_VSYNC=0 : l'image part dès qu'elle est prête (jusqu'à ~16 ms de gagnés),
+# mais à des instants qui ne tombent pas sur le rafraîchissement : à-coups et déchirures.
 LATENCY_FLAGS=()
 NOVSYNC_QUERY=""
-if [ "${DOPPLOR_VSYNC:-0}" != "1" ]; then
+if [ "${DOPPLOR_VSYNC:-1}" != "1" ]; then
   LATENCY_FLAGS=(--disable-gpu-vsync --disable-frame-rate-limit)
   NOVSYNC_QUERY="?novsync"  # la page cadence alors elle-même son rendu
 fi

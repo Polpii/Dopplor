@@ -33,6 +33,10 @@ const RESULTS_MAX_MS = 25000;
 /** Suivi du double sur le reflet : position (ms), taille (plus lent : on fléchit en dansant). */
 const OVERLAY_FOLLOW_MS = 500;
 const OVERLAY_SIZE_MS = 1500;
+/** Aperçu du futur : chemin des mains (temps), reflet de la prochaine pose (dès ce nombre de temps avant). */
+const FUTURE_BEATS = 1;
+const ECHO_BEATS = 2;
+const ECHO_BONES: [number, number][] = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 /** Hauteur épaules → chevilles du double debout (en largeurs d'épaules). */
 const GHOST_HEIGHT = (() => {
   const p = skeleton({ aL: 20, fL: 20, aR: 20, fR: 20 });
@@ -458,7 +462,10 @@ export class DanceMode {
       }
     }
 
-    if (this.state === "playing" && t !== null) this.drawTimeline(out, beat, pulse, sw, sh, unit, width);
+    if (this.state === "playing" && t !== null) {
+      this.drawFuture(out, beat, width);
+      this.drawTimeline(out, beat, pulse, sw, sh, unit, width);
+    }
 
     // Étincelles.
     this.sparks = this.sparks.filter((s) => now - s.born < s.life);
@@ -469,6 +476,34 @@ export class DanceMode {
       const y = s.y + s.vy * age + 400 * age * age; // retombent doucement
       out.line(x, y, x - s.vx * 0.025, y - (s.vy + 800 * age) * 0.025, width * 1.1, s.color, 1.6 * k);
     }
+  }
+
+  /**
+   * Ce qui arrive, très discrètement, sur le reflet : le chemin que vont prendre les mains du
+   * double pendant le prochain temps (une traînée qui s'efface vers le futur), et la prochaine
+   * pose marquée, en reflet à peine visible qui s'affirme à l'approche du temps.
+   */
+  private drawFuture(out: SegmentBuffer, beat: number, width: number): void {
+    const a = this.overlay;
+    if (!a) return;
+    const [w, h] = this.frameSize();
+    const place = (pose: KeyPose) => skeleton(pose).map(([x, y]) => this.toScreen((a.x - x * a.size) / w, (a.y + y * a.size) / h));
+    // Mains : chemin sur le prochain temps.
+    const steps = 8;
+    const path = Array.from({ length: steps + 1 }, (_, s) => place(this.choreo.poseAt(beat + (FUTURE_BEATS * s) / steps)));
+    for (const i of [15, 16]) {
+      for (let s = 1; s <= steps; s++) {
+        const [x0, y0] = path[s - 1][i];
+        const [x1, y1] = path[s][i];
+        out.line(x0, y0, x1, y1, width * 0.7, COLOR.ghost, 0.45 * (1 - s / (steps + 1)));
+      }
+    }
+    // Prochaine pose marquée, dans les deux temps qui viennent.
+    const next = this.choreo.hits.find((hit) => hit.beat > beat + 0.1);
+    if (!next || next.beat - beat > ECHO_BEATS) return;
+    const k = 1 - (next.beat - beat) / ECHO_BEATS; // 0 → 1 à l'approche
+    const p = place(next.pose);
+    for (const [i, j] of ECHO_BONES) out.line(p[i][0], p[i][1], p[j][0], p[j][1], width * 0.8, COLOR.ghost, 0.08 + 0.22 * k * k);
   }
 
   /** Les prochaines poses défilent en bas vers un repère, et y arrivent pile sur le temps. */
