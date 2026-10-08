@@ -1,8 +1,14 @@
 // Le menu dans le reflet : les bulles sont des objets 3D dans l'espace derrière la vitre, en arc
-// autour de la main qui l'ouvre (au-dessus de la paume, à sa profondeur), à l'échelle de la
-// personne, vues depuis son œil. Elles restent là où elles sont nées, dans l'environnement du
-// reflet (comme de vrais objets : la personne peut bouger autour). La main et le bras qui passent
-// devant les cachent. Seul le repli suit la vraie main, pour se refermer dans le poing.
+// autour de la main qui l'ouvre, à l'échelle de la personne, vues depuis son œil. Elles restent
+// là où elles sont nées, dans l'environnement du reflet (de vrais objets : on peut bouger
+// autour).
+//
+// Profondeur : celle du buste, un peu en arrière, jamais devant le corps. La main ne donne que
+// l'endroit à l'écran : sa profondeur mesurée est parfois très fausse (jusqu'à 1 m devant la
+// poitrine, relevé sur le miroir), et des bulles posées à cette profondeur passaient devant la
+// silhouette. Chaque bulle est poussée, sur le regard de l'œil, jusqu'à ce plan (et agrandie
+// d'autant : même place à l'écran) : là où elle touche la silhouette, le corps la cache ; la
+// main et le bras, devant, aussi.
 //
 // Le menu (menu.ts) garde ses gestes et son rythme ; ici, seulement où sont les bulles et de
 // quoi elles ont l'air. La fée accompagne l'ouverture et la fermeture (fairy-mode.ts).
@@ -23,6 +29,8 @@ const BODY_ARC = 0.8;
 const BODY_LIFT = 0.12;
 /** L'arc s'enroule un peu : les bulles des côtés légèrement plus en arrière. */
 const BODY_WRAP = 0.25;
+/** Plan des bulles : derrière la poitrine (m) — derrière le devant du corps (~10 cm de plus). */
+const BEHIND_CHEST = 0.05;
 /** Écart entre deux bulles voisines sur l'arc. */
 const ARC_STEP = (48 * Math.PI) / 180;
 /** Éclosion : la première bulle, puis une toutes les … (ms) — dans le rythme du menu 2D. */
@@ -213,10 +221,10 @@ export class Menu3D implements MenuStage {
   /** Taille des bulles (× la géométrie) et largeur d'épaules (m), suivies doucement. */
   private size = 1;
   private shoulders = 0.4;
-  /** Centre de l'arc (suit la personne), sa place par rapport à la poitrine (fixée à l'ouverture),
-   * recadrage pour rester dans l'écran, main qui a ouvert. */
+  /** Centre de l'arc, recadrage pour rester dans l'écran, main qui a ouvert. */
   private anchor = new THREE.Vector3();
-  private offset = new THREE.Vector3();
+  /** Plan des bulles (z Three), derrière la poitrine. */
+  private plane = -2;
   private shift = new THREE.Vector3();
   private side: "left" | "right" | null = null;
   /** Onde de choc (fermeture dans le poing, bulle qui éclate). */
@@ -281,14 +289,8 @@ export class Menu3D implements MenuStage {
     if (!occ || now - occ.at > 500 || !this.world.ready) return false;
     this.side = side;
     this.shift.set(0, 0, 0);
-    // Arc au-dessus de la paume, retenu par rapport à la poitrine (il suivra le corps).
-    const body = occ.body;
-    const chest = reflected(body.chest);
-    const palm = side ? reflected(side === "left" ? body.lp : body.rp) : chest.clone().add(new THREE.Vector3(0, -0.05, 0.25));
-    const sw = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
-    this.offset.copy(palm).add(new THREE.Vector3(0, BODY_LIFT * sw, 0)).sub(chest);
-    this.layout(occ, 1);
-    // Recadrage : l'arc reste dans l'écran (décalage gardé tant que le menu est ouvert).
+    this.layout(occ);
+    // Recadrage : l'arc reste dans l'écran.
     for (let pass = 0; pass < 3; pass++) {
       let dx = 0;
       let dy = 0;
@@ -298,14 +300,14 @@ export class Menu3D implements MenuStage {
         dy = y < MARGIN_TOP ? Math.max(dy, MARGIN_TOP - y) : y > 1 - MARGIN ? Math.min(dy, 1 - MARGIN - y) : dy;
       }
       if (!dx && !dy) break;
-      // Décalage à l'écran → mètres à cette profondeur.
+      // Décalage à l'écran → mètres dans le plan des bulles.
       const c = this.anchor;
       const [x0, y0] = this.world.project(c);
       const [x1] = this.world.project(c.clone().add(new THREE.Vector3(0.1, 0, 0)));
       const [, y1] = this.world.project(c.clone().add(new THREE.Vector3(0, 0.1, 0)));
       this.shift.x += (dx / (x1 - x0)) * 0.1;
       this.shift.y += (dy / (y1 - y0)) * 0.1;
-      this.layout(occ, 1);
+      this.layout(occ);
     }
     this.bubbles.forEach((b, i) => {
       b.birth = FIRST_MS + STEP_MS * i;
@@ -317,31 +319,35 @@ export class Menu3D implements MenuStage {
     return true;
   }
 
+  /** Une position vue par l'œil, ramenée (sur son regard) au plan des bulles ou plus loin. */
+  private onPlane(q: THREE.Vector3, back = 0): THREE.Vector3 {
+    const eye = this.world.camera.position;
+    const z = Math.min(q.z, this.plane - back);
+    return eye.clone().lerp(q, (z - eye.z) / (q.z - eye.z));
+  }
+
   /**
-   * Place l'arc (`blend` : 1 tout de suite, sinon suivi doux) : là où il a été ouvert par rapport
-   * à la poitrine, à l'échelle des épaules. La paume de la main qui a ouvert (d'où le menu
-   * jaillit, où il se replie) et la place de la fée.
+   * Place l'arc à l'ouverture : la paume, vue par l'œil, ramenée au plan derrière la poitrine ;
+   * l'arc au-dessus, dans ce plan, à l'échelle des épaules (les côtés un peu plus en arrière). La
+   * place de la fée à côté.
    */
-  private layout(occ: Occlusion, blend: number): void {
+  private layout(occ: Occlusion): void {
     const body = occ.body;
     const chest = reflected(body.chest);
-    const sw = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
-    this.shoulders = blend >= 1 ? sw : this.shoulders + (sw - this.shoulders) * blend;
+    this.shoulders = THREE.MathUtils.clamp(reflected(body.ls).distanceTo(reflected(body.rs)), 0.25, 0.6);
     this.size = (BODY_BUBBLE * this.shoulders) / BUBBLE_R;
-    const target = chest.clone().add(this.offset);
-    if (blend >= 1) this.anchor.copy(target);
-    else this.anchor.lerp(target, blend);
+    this.plane = chest.z - BEHIND_CHEST;
+    const palm = this.side ? reflected(this.side === "left" ? body.lp : body.rp) : chest.clone().add(new THREE.Vector3(0, -0.05, 0.25));
+    this.palm.copy(this.onPlane(palm));
+    this.anchor.copy(this.palm).add(new THREE.Vector3(0, BODY_LIFT * this.shoulders, 0));
     const c = this.anchor.clone().add(this.shift);
     const r = BODY_ARC * this.shoulders;
     const n = this.bubbles.length;
     const spread = (ARC_STEP * (n - 1)) / 2;
     this.bubbles.forEach((b, i) => {
       const a = -spread + ARC_STEP * i;
-      b.home.set(c.x + Math.sin(a) * r, c.y + Math.cos(a) * r, c.z - BODY_WRAP * this.shoulders * (1 - Math.cos(a)));
+      b.home.set(c.x + Math.sin(a) * r, c.y + Math.cos(a) * r, this.plane - BODY_WRAP * this.shoulders * (1 - Math.cos(a)));
     });
-    const palm = this.side ? reflected(this.side === "left" ? body.lp : body.rp) : chest.clone().add(new THREE.Vector3(0, -0.05, 0.25));
-    if (blend >= 1) this.palm.copy(palm);
-    else this.palm.lerp(palm, 0.35);
     // La fée attend à côté de la dernière bulle, un peu plus haut.
     this.beside.copy(this.bubbles[n - 1].home).add(new THREE.Vector3(0.22 * this.shoulders, 0.1 * this.shoulders, 0.05));
   }
@@ -385,7 +391,9 @@ export class Menu3D implements MenuStage {
     const closing = this.opened ? 0 : Math.min(1, (now - this.closedAt) / 300);
     // Les bulles restent à leur place ; la paume (où elles se replient) suit la vraie main.
     const occ = this.occlusion();
-    if (this.opened && occ && now - occ.at < 500 && this.side) this.palm.lerp(reflected(this.side === "left" ? occ.body.lp : occ.body.rp), 0.35);
+    if (this.opened && occ && now - occ.at < 500 && this.side) {
+      this.palm.lerp(this.onPlane(reflected(this.side === "left" ? occ.body.lp : occ.body.rp)), 0.35);
+    }
     if (this.opened) this.fairy.menuHold(this.beside, this.palm, view.fold, this.shoulders);
     // Onde de choc.
     if (this.pendingShock && now >= this.pendingShock.when) {
@@ -398,6 +406,8 @@ export class Menu3D implements MenuStage {
       this.wave.scale.setScalar(r * 2);
       this.wave.material.uniforms.uAlpha.value = 1.4 * (1 - w) ** 2;
     } else if (this.wave.visible) this.wave.visible = false;
+    // Pas encore de silhouette pour les cacher derrière le corps : elles attendent (au plus 0,4 s).
+    const masked = this.world.shared.uHasOcc.value > 0 || since > 400 ? 1 : 0;
     // Repli : les bulles s'enroulent dans le tourbillon de la fée autour de la main.
     const swirl = this.fairy.whirl;
     this.bubbles.forEach((b, i) => {
@@ -433,7 +443,7 @@ export class Menu3D implements MenuStage {
           pos = this.palm.clone().addScaledVector(rel.applyAxisAngle(new THREE.Vector3(0, 0, 1), u * 3), 1 - u);
           m.uAppear.value = 1 - u;
         }
-      } else m.uAppear.value = Math.min(1, Math.max(0, k * 1.5));
+      } else m.uAppear.value = Math.min(1, Math.max(0, k * 1.5)) * masked;
       const hovered = this.opened && view.hovered === i;
       const on = view.active[i];
       const target = hovered ? 1.4 : on ? 1.3 : 0.6;
