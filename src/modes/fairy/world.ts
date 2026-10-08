@@ -30,11 +30,15 @@ uniform float uScale;
 uniform float uHasOcc;
 uniform vec2 uCell;
 uniform float uBias;
+// Distance de la fée elle-même (m derrière la vitre) : halo et ailes sont cachés ou non d'un
+// bloc, d'après son centre (une aile devant le corps et l'autre derrière faisait une découpe
+// bizarre). 0 : chaque fragment selon sa propre distance (étincelles).
+uniform float uSolid;
 // r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
   vec2 o = texture2D(uOcc, uv).rg;
   if (o.g < 0.002) return 1.0;
-  float behind = 1.0 - smoothstep(-0.05, 0.05, o.r * 255.0 * uScale - zBehind);
+  float behind = 1.0 - smoothstep(-0.03, 0.03, o.r * 255.0 * uScale - zBehind);
   return 1.0 - o.g * behind;
 }
 // 1 si ce fragment, à zBehind m derrière la vitre, est devant le reflet du corps (ou à côté).
@@ -69,6 +73,7 @@ export interface SharedUniforms {
   uHasOcc: { value: number };
   uCell: { value: THREE.Vector2 };
   uBias: { value: number };
+  uSolid: { value: number };
   [name: string]: THREE.IUniform;
 }
 
@@ -87,7 +92,7 @@ export function glowMaterial(shared: SharedUniforms, color: THREE.Color, sharpne
       void main() {
         vec2 p = vUv * 2.0 - 1.0;
         float r2 = dot(p, p);
-        float a = exp(-r2 * uSharp) * (1.0 - smoothstep(0.8, 1.0, r2)) * uIntensity * visibleBehind(vBehind);
+        float a = exp(-r2 * uSharp) * (1.0 - smoothstep(0.8, 1.0, r2)) * uIntensity * visibleBehind(uSolid > 0.0 ? uSolid : vBehind);
         gl_FragColor = vec4(uColor, a);
       }`,
     transparent: true,
@@ -118,7 +123,7 @@ export function wingMaterial(shared: SharedUniforms, color: THREE.Color): THREE.
         // Nervure centrale, très légère, et reflet irisé vers le bout.
         float vein = (1.0 - smoothstep(0.0, 0.12, d)) * (1.0 - u) * 0.25;
         vec3 color = mix(uColor, vec3(1.0, 0.86, 1.0), 0.45 * u);
-        float a = (0.13 * inside + 0.55 * rim + vein) * uOpacity * visibleBehind(vBehind);
+        float a = (0.13 * inside + 0.55 * rim + vein) * uOpacity * visibleBehind(uSolid > 0.0 ? uSolid : vBehind);
         gl_FragColor = vec4(color, a);
       }`,
     transparent: true,
@@ -132,7 +137,7 @@ export function wingMaterial(shared: SharedUniforms, color: THREE.Color): THREE.
 /** Étincelles : points ronds qui s'éteignent, cachés derrière le corps eux aussi. */
 export function sparkMaterial(shared: SharedUniforms, color: THREE.Color): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { ...shared, uColor: { value: color } },
+    uniforms: { ...shared, uSolid: { value: 0 }, uColor: { value: color } },
     vertexShader: /* glsl */ `
       uniform vec2 uRes;
       attribute float aSize;
@@ -194,6 +199,7 @@ export class MirrorWorld {
       uHasOcc: { value: 0 },
       uCell: { value: new THREE.Vector2(1 / 108, 1 / 192) },
       uBias: { value: 0 },
+      uSolid: { value: 0 },
     };
     this.camera.matrixAutoUpdate = false;
     this.resize();

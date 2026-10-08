@@ -40,6 +40,9 @@ const SCALE_MIN = 0.9;
 const SCALE_MAX = 1.0;
 /** Posée sur une main (tout près, devant) : plus petite. */
 const PERCH_SCALE = 0.6;
+/** Volume du corps qu'elle contourne : demi-largeur (épaules, bras), demi-épaisseur (m). */
+const BODY_HALF_WIDTH = 0.4;
+const BODY_HALF_DEPTH = 0.3;
 /** Devant la personne, elle s'approche moins qu'elle ne s'éloigne derrière (m). */
 const FRONT_DEPTH = 0.45;
 
@@ -154,11 +157,14 @@ export class FairyMode {
     return this.active;
   }
 
+  /** Vrai quand elle doit laisser les mains tranquilles (menu ouvert). */
+  busy: () => boolean = () => false;
+
   /** Elle s'occupe d'une main (la voit, y vient, y est posée, vient d'en partir). */
   get holdsHand(): boolean {
     if (!this.active) return false;
-    if (this.mood === "notice" || this.mood === "approach" || this.mood === "perched") return true;
-    return performance.now() - this.leftHandAt < 1500;
+    if (this.mood === "approach" || this.mood === "perched" || this.mood === "fall" || this.mood === "recover") return true;
+    return performance.now() - this.leftHandAt < 800;
   }
 
   enter(now = performance.now()): void {
@@ -236,6 +242,7 @@ export class FairyMode {
     const tumble = this.mood === "fall" ? 1 - since / FALL_MS : this.mood === "recover" ? Math.max(0, 0.4 - since / RECOVER_MS) : 0;
     const arriving = this.mood === "approach" ? smooth(Math.min(1, (now - this.moodSince) / APPROACH_MS)) : 0;
     this.world.shared.uBias.value = PERCH_BIAS * Math.max(this.rest, arriving);
+    this.world.shared.uSolid.value = Math.max(0.01, -this.pos.z);
     // Vol stationnaire : un léger tremblé vertical (pas posée).
     const shown = this.pos.clone().add(new THREE.Vector3(0, 0.006 * Math.sin(t * 17) * (1 - this.rest), 0));
     const ahead = this.chest ? this.pos.z - this.chest.z : 0; // > 0 : devant la personne
@@ -385,9 +392,10 @@ export class FairyMode {
         if (since > RECOVER_MS) this.setMood("orbit", now);
         return this.recoverTo.clone();
       default:
-        // Main à plat tenue : elle la remarque (la plus haute des deux si elles le sont toutes les deux).
+        // Main à plat tenue : elle la remarque (la plus haute des deux si elles le sont toutes les
+        // deux). Pas quand le menu est ouvert : la main qui l'a ouvert est à plat, paume au ciel.
         for (const side of ["right", "left"] as const) {
-          if (this.flatFor(side, now) > FLAT_MS && this.hands[side].palm) {
+          if (!this.busy() && this.flatFor(side, now) > FLAT_MS && this.hands[side].palm) {
             this.goTo(side, now, false);
             return this.pos.clone();
           }
@@ -457,9 +465,24 @@ export class FairyMode {
     const body = { c: this.chest!, head, hips };
     const next = this.pathPoint(this.path, body, t, (now - this.pathSince) / 1000);
     const k = Math.min(1, (now - this.pathSince) / PATH_BLEND_MS);
-    if (k >= 1 || !this.prevPath) return next;
-    const prev = this.pathPoint(this.prevPath, body, t, Infinity);
-    return prev.lerp(next, smooth(k));
+    const out = k >= 1 || !this.prevPath ? next : this.pathPoint(this.prevPath, body, t, Infinity).lerp(next, smooth(k));
+    return this.outsideBody(out, head, hips);
+  }
+
+  /**
+   * Jamais dans le corps : entre les hanches et le haut de la tête, la cible est repoussée hors
+   * d'un ovale autour de la poitrine (épaules, bras le long du corps, épaisseur du buste). Dedans,
+   * elle était à la même distance que le corps : à moitié cachée, un effet bizarre.
+   */
+  private outsideBody(p: THREE.Vector3, head: THREE.Vector3, hips: THREE.Vector3): THREE.Vector3 {
+    const c = this.chest!;
+    if (p.y < hips.y - 0.15 || p.y > head.y + 0.15) return p;
+    const dx = p.x - c.x;
+    const dz = p.z - c.z;
+    const e = (dx / BODY_HALF_WIDTH) ** 2 + (dz / BODY_HALF_DEPTH) ** 2;
+    if (e >= 1) return p;
+    const k = 1 / Math.sqrt(Math.max(e, 1e-4));
+    return new THREE.Vector3(c.x + dx * k, p.y, c.z + dz * k);
   }
 
   /**

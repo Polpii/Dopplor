@@ -162,6 +162,7 @@ async function main(): Promise<void> {
   menu.setActive(activeModes());
   // La main tendue à plat pour la fée ressemble au geste du menu : pas de menu pendant ce temps.
   menu.paused = () => activity === "fairy" && fairy.holdsHand;
+  fairy.busy = () => menu.open;
   if (import.meta.env.DEV) Object.assign(window, { __menu: menu, __ghost: ghost, __signs: signs, __dance: dance, __fairy: fairy });
   // Diagnostic sur le miroir (enregistrement d'une session par le débogueur du kiosque) : instants
   // des rendus et état des modes, aussi dans la version construite.
