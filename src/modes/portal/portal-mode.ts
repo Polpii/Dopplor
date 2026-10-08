@@ -173,13 +173,13 @@ vec3 skyBase(vec3 d) {
   col = mix(col, vec3(1.15, 0.70, 0.40), exp(-h * 10.0) * (0.18 + 0.75 * pow(sd, 3.0)));
   return col + vec3(1.0, 0.70, 0.40) * (pow(sd, 10.0) * 0.5 + pow(sd, 90.0) * 1.2);
 }
-vec3 hazeColor(vec3 d) { return skyBase(vec3(d.x, max(d.y, 0.0) * 0.5 + 0.02, d.z)); }
+vec3 hazeColor(vec3 d) { return skyBase(vec3(d.x, max(d.y, 0.0) * 0.5 + 0.04, d.z)) * vec3(0.78, 0.82, 0.9); }
 // Perspective aérienne : plus c'est loin (et bas), plus l'air s'interpose, couleur du ciel.
 vec3 aerial(vec3 col, vec3 p) {
   vec3 v = p - uCam;
   float dist = length(v);
   float above = max(0.0, (p.y + uCam.y) * 0.5 - (${VALLEY.toFixed(1)}));
-  float f = 1.0 - exp(-dist * 0.0003 * exp(-above / 400.0));
+  float f = 1.0 - exp(-dist * 0.00016 * exp(-above / 400.0));
   return mix(col, hazeColor(v / dist), f);
 }
 vec3 ambient(vec3 n) { return mix(vec3(0.10, 0.10, 0.08), vec3(0.30, 0.40, 0.58), n.y * 0.5 + 0.5); }
@@ -482,7 +482,7 @@ export class PortalMode {
               // Nuages sur un plafond : plus serrés vers l'horizon, comme en vrai.
               vec2 q = d.xz / (d.y + 0.03) * 1.6 + vec2(uTime * 0.004, uTime * 0.001);
               float c = fbm5(q * 0.55);
-              float dens = smoothstep(0.5, 0.78, c);
+              float dens = smoothstep(0.6, 0.86, c);
               float toward = fbm5(q * 0.55 + uSun.xz * 0.12);
               float lit = clamp(0.55 + (c - toward) * 4.0, 0.0, 1.0);
               vec3 cc = mix(vec3(0.42, 0.40, 0.46), vec3(1.35, 1.0, 0.72), lit);
