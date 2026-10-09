@@ -453,8 +453,10 @@ export class PortalMode {
     const s = this.sample();
     if (!s || s.wall === this.eyeWall) return;
     if (this.eyeOk && this.vis < VIS_MIN) {
-      // Yeux pas vus (devinés par le squelette) : on garde la position, la vitesse s'éteint.
+      // Yeux pas vus (devinés par le squelette, tout près) : la vue reste où elle est, la vitesse
+      // s'éteint ; la personne est toujours là (mesure récente : pas de retour à la vue neutre).
       this.eyeV.multiplyScalar(0.7);
+      this.eyeWall = s.wall;
       return;
     }
     const z = new THREE.Vector3(s.eye[0], -s.eye[1], Math.max(MIN_EYE_M, -s.eye[2]));
