@@ -129,15 +129,18 @@ export function handStates(scene: Scene, now: number, w: number, h: number): Han
 const TIGHT_REACH = 1.1; // doigts serrés (poing)
 const OPEN_REACH = 1.6; // doigts déployés
 const FLICK_MS = 300; // du poing à la main ouverte : une ouverture brusque
-const FIST_UP = 0.25; // poing nettement tourné vers le ciel
-// Le poing doit être tenu un instant avant de s'ouvrir : on fait sans cesse des poings qui
-// s'ouvrent en jouant (bulles, danse, signes) ; tenir le poing, c'est vouloir le menu.
-const FIST_HOLD_MS = 300;
+const FIST_UP = 0.12; // poing au moins un peu tourné vers le ciel
+// Le poing doit être tenu un court instant avant de s'ouvrir : on fait sans cesse des poings
+// qui s'ouvrent en passant (bulles, danse, signes). Mesuré quelle que soit l'orientation (elle
+// est bruitée : exiger qu'elle reste « vers le ciel » rendait le geste presque impossible), et
+// en tolérant de brefs ratés de détection.
+const FIST_HOLD_MS = 150;
+const FIST_GAP_MS = 200;
 /** Après une fermeture du menu, pas de réouverture avant ce délai. */
 const COOLDOWN_MS = 1500;
 // Bras tendu (coude ouvert), la main est vue plus de face : sa paume paraît moins tournée vers
 // le ciel qu'elle ne l'est.
-const OPEN_UP = 0.35; // main ouverte paume vers le ciel (au moins ~20°)
+const OPEN_UP = 0.25; // main ouverte paume vers le ciel (au moins ~15°)
 const WRIST_DROP = 0.05; // le poignet ne descend pas en s'ouvrant (largeurs d'épaules)
 // Jusqu'aux hanches : bras tendu vers le bas, coude ouvert, la main est sous le nombril.
 const MAX_HEIGHT = 1.6;
@@ -181,10 +184,10 @@ export class BloomGesture {
       const y = hand.wristPx[1];
 
       if (hand.closed && hand.reach <= TIGHT_REACH && raised) {
-        // Tenu depuis quand (poing vers le ciel sans interruption) ?
-        const held = m.fist && now - m.fist.t < 120 && m.fist.up >= FIST_UP ? m.fist.since : now;
-        m.fist = { t: now, up, y, since: up >= FIST_UP ? held : now };
-        if (m.armed && up >= FIST_UP && now - m.fist.since >= FIST_HOLD_MS && now - this.resetAt > COOLDOWN_MS) ready = hand;
+        // Poing tenu depuis quand (brefs ratés tolérés) ? Orientation : la meilleure du moment.
+        const held = m.fist && now - m.fist.t < FIST_GAP_MS;
+        m.fist = { t: now, up: held ? Math.max(up, m.fist!.up * 0.9) : up, y, since: held ? m.fist!.since : now };
+        if (m.armed && m.fist.up >= FIST_UP && now - m.fist.since >= FIST_HOLD_MS && now - this.resetAt > COOLDOWN_MS) ready = hand;
         continue;
       }
       if (!m.armed && hand.open) m.armed = true;
