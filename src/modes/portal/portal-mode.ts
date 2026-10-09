@@ -330,6 +330,9 @@ export class PortalMode {
   /** Confiance dans la mesure de l'œil (yeux bien vus par la caméra), personne de dos (0–1). */
   private conf = 1;
   private vis = 1;
+  /** Milieu des épaules (repère Three) et écart épaules → yeux, appris quand les yeux sont bien vus. */
+  private chest: THREE.Vector3 | null = null;
+  private chestOff = new THREE.Vector3(0, 0.21, -0.08);
   private back = 0;
   private lastFrame = 0;
   private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
@@ -360,7 +363,7 @@ export class PortalMode {
     private world: MirrorWorld,
     private present: () => boolean = () => false,
     private sample: () => EyeSample | null = () => null,
-    private cues: () => { eyeVis: number; facing: number } | null = () => null,
+    private cues: () => { eyeVis: number; facing: number; chest: [number, number, number] | null } | null = () => null,
   ) {
     this.root.visible = false;
     world.scene.add(this.root);
@@ -452,12 +455,19 @@ export class PortalMode {
   private feedEye(): void {
     const s = this.sample();
     if (!s || s.wall === this.eyeWall) return;
-    if (this.eyeOk && this.vis < VIS_MIN) {
-      // Yeux pas vus (devinés par le squelette) : on garde la position, la vitesse s'éteint.
-      this.eyeV.multiplyScalar(0.7);
-      return;
+    // Les yeux quand la caméra les voit bien ; sinon (visage hors champ, tout près : ils sont
+    // devinés et sautent) la tête d'après les épaules, toujours bien vues, avec l'écart épaules →
+    // yeux appris quand les yeux étaient visibles ; entre les deux, un mélange.
+    const seen = new THREE.Vector3(s.eye[0], -s.eye[1], -s.eye[2]);
+    let z = seen;
+    if (this.chest) {
+      if (this.vis >= VIS_GOOD) this.chestOff.lerp(seen.clone().sub(this.chest), 0.05);
+      else {
+        const head = this.chest.clone().add(this.chestOff);
+        z = this.vis >= VIS_MIN ? head.lerp(seen, this.conf) : head;
+      }
     }
-    const z = new THREE.Vector3(s.eye[0], -s.eye[1], Math.max(MIN_EYE_M, -s.eye[2]));
+    z.z = Math.max(MIN_EYE_M, z.z);
     const dt = (s.wall - this.eyeWall) / 1000;
     const before = this.predictEye();
     if (!this.eyeOk || dt <= 0 || dt > 0.3 || z.distanceTo(this.eyeX) > 0.6) {
@@ -509,6 +519,7 @@ export class PortalMode {
     const cue = this.cues();
     if (cue) {
       this.vis = cue.eyeVis;
+      this.chest = cue.chest ? new THREE.Vector3(cue.chest[0], -cue.chest[1], -cue.chest[2]) : null;
       this.conf = smoothstep(VIS_MIN, VIS_GOOD, cue.eyeVis);
       this.back += ((cue.facing < 0 ? 1 : 0) - this.back) * (1 - Math.exp(-dt / 0.3));
     }
