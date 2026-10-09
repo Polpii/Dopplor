@@ -77,6 +77,8 @@ const VIEW_SPEED_MIN = 0.15;
 /** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
  *  pleine au-delà de FULL_LEAD_M. */
 const NO_LEAD_M = 0.6;
+/** Yeux mal vus : la mesure compte au moins pour cette part (sinon la vue ne bouge plus). */
+const CONF_MIN = tune("CONF_MIN", 0.04);
 const FULL_LEAD_M = 0.9;
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
@@ -460,7 +462,7 @@ export class PortalMode {
       this.eyeOdd = r.length() > suspect ? this.eyeOdd + 1 : 0;
       // Yeux mal vus par la caméra (visage hors champ, tout près) : la position est devinée par
       // le squelette, elle ne fait presque plus bouger la vue.
-      const doubt = (this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1) * Math.max(0.04, this.conf);
+      const doubt = (this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1) * (CONF_MIN + (1 - CONF_MIN) * this.conf);
       const near = Math.min(1, Math.max(0.12, old.z / NEAR_M));
       const cutoff = (MIN_CUT + SPEED_CUT * this.eyeV.length()) * near;
       const a = (1 - Math.exp(-2 * Math.PI * cutoff * dt)) * doubt;
