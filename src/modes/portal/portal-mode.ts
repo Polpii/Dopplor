@@ -68,9 +68,9 @@ const MOVE_LO = tune("MOVE_LO", 0.08);
 const MOVE_HI = tune("MOVE_HI", 0.3);
 const MIN_EYE_M = 0.35;
 /** Vitesse maximale de la vue (m/s) par mètre de distance à la vitre : une vitesse angulaire
- *  plafonnée (~50°/s), donc plus lente tout près de l'écran, où le même déplacement se voit le
+ *  plafonnée (~29°/s), donc plus lente tout près de l'écran, où le même déplacement se voit le
  *  plus. La vue ne bouge jamais brusquement, quoi que fasse la mesure. */
-const VIEW_SPEED = tune("VIEW_SPEED", 0.9);
+const VIEW_SPEED = tune("VIEW_SPEED", 0.5);
 const VIEW_SPEED_MIN = 0.15;
 /** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
  *  pleine au-delà de FULL_LEAD_M. */
