@@ -67,10 +67,12 @@ const V_CUT = tune("V_CUT", 3);
 const MOVE_LO = tune("MOVE_LO", 0.08);
 const MOVE_HI = tune("MOVE_HI", 0.3);
 const MIN_EYE_M = 0.35;
-/** Vitesse maximale de la vue (m/s) par mètre de distance à la vitre : une vitesse angulaire
- *  plafonnée (~29°/s), donc plus lente tout près de l'écran, où le même déplacement se voit le
- *  plus. La vue ne bouge jamais brusquement, quoi que fasse la mesure. */
+/** Vitesse maximale de la vue sur le côté (m/s par mètre de distance à la vitre, soit une vitesse
+ *  angulaire) : ~29°/s tout près de l'écran, où le même déplacement se voit le plus, jusqu'à
+ *  ~60°/s au-delà de 1,8 m ; distance (m/s) à part. La vue ne bouge jamais brusquement. */
 const VIEW_SPEED = tune("VIEW_SPEED", 0.5);
+const VIEW_SPEED_FAR = tune("VIEW_SPEED_FAR", 1.05);
+const VIEW_Z_SPEED = tune("VIEW_Z_SPEED", 0.8);
 const VIEW_SPEED_MIN = 0.15;
 /** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
  *  pleine au-delà de FULL_LEAD_M. */
@@ -526,9 +528,18 @@ export class PortalMode {
     const tau = 0.3 * smoothstep(0.12, 0.45, gap);
     const step = target.sub(this.view);
     if (tau >= 0.004) step.multiplyScalar(1 - Math.exp(-dt / tau));
-    // Vitesse plafonnée (angulaire) : jamais de mouvement brusque de la vue.
-    const vmax = Math.max(VIEW_SPEED_MIN, VIEW_SPEED * this.view.z) * dt;
-    if (step.length() > vmax) step.setLength(vmax);
+    // Vitesse plafonnée : jamais de mouvement brusque de la vue. Sur le côté (penché), en vitesse
+    // angulaire : douce tout près (où l'œil est mal mesuré et le moindre déplacement se voit),
+    // plus libre de loin (qui se penche vite à 2 m doit être suivi). La distance à part.
+    const omega = VIEW_SPEED + (VIEW_SPEED_FAR - VIEW_SPEED) * smoothstep(0.8, 1.8, this.view.z);
+    const vside = Math.max(VIEW_SPEED_MIN, omega * this.view.z) * dt;
+    const side = Math.hypot(step.x, step.y);
+    if (side > vside) {
+      step.x *= vside / side;
+      step.y *= vside / side;
+    }
+    const vz = VIEW_Z_SPEED * dt;
+    if (Math.abs(step.z) > vz) step.z = Math.sign(step.z) * vz;
     this.view.add(step);
   }
 
