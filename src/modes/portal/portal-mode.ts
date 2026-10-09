@@ -32,7 +32,10 @@ const LEDGE_BELOW_EYE = 1.6;
 /** Une personne est « stable » quand son œil reste dans ce rayon (m) pendant ce temps (ms). */
 const STABLE_RADIUS = 0.06;
 const STABLE_MS = 900;
-const LOST_MS = 1500;
+const LOST_MS = 4000;
+/** Revue dans ce délai (ms) après avoir été perdue (squelette perdu tout près du miroir) : on la
+ *  reprend aussitôt, sans repasser par la vue neutre. */
+const RELOCK_MS = 8000;
 /** Présente depuis ce temps (ms) sans jamais se tenir immobile : on la suit quand même. */
 const PRESENT_MS = 3000;
 /** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
@@ -64,6 +67,15 @@ const V_CUT = tune("V_CUT", 3);
 const MOVE_LO = tune("MOVE_LO", 0.08);
 const MOVE_HI = tune("MOVE_HI", 0.3);
 const MIN_EYE_M = 0.35;
+/** Vitesse maximale de la vue (m/s) par mètre de distance à la vitre : une vitesse angulaire
+ *  plafonnée (~50°/s), donc plus lente tout près de l'écran, où le même déplacement se voit le
+ *  plus. La vue ne bouge jamais brusquement, quoi que fasse la mesure. */
+const VIEW_SPEED = tune("VIEW_SPEED", 0.9);
+const VIEW_SPEED_MIN = 0.15;
+/** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
+ *  pleine au-delà de FULL_LEAD_M. */
+const NO_LEAD_M = 0.6;
+const FULL_LEAD_M = 0.9;
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
  *  durée (s), puis elle sature en douceur quand les mesures tardent (pas d'arrêt net puis de
@@ -303,6 +315,10 @@ export class PortalMode {
   private anchorSince = 0;
   private seenAt = -1e9;
   private presentSince = 0;
+  private lostAt = -1e9;
+  /** Confiance dans la mesure de l'œil (yeux bien vus par la caméra), personne de dos (0–1). */
+  private conf = 1;
+  private back = 0;
   private lastFrame = 0;
   private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
   private boats: THREE.Group[] = [];
@@ -332,6 +348,7 @@ export class PortalMode {
     private world: MirrorWorld,
     private present: () => boolean = () => false,
     private sample: () => EyeSample | null = () => null,
+    private cues: () => { eyeVis: number; facing: number } | null = () => null,
   ) {
     this.root.visible = false;
     world.scene.add(this.root);
@@ -411,8 +428,10 @@ export class PortalMode {
     // Tout le retard est anticipé jusqu'à LEAD_CAP_S ; au-delà (mesures en retard), l'anticipation
     // sature en douceur (pas d'arrêt net, pas d'emballement). Seulement en mouvement réel.
     const lead = age <= LEAD_CAP_S ? age : LEAD_CAP_S + 0.06 * (1 - Math.exp(-(age - LEAD_CAP_S) / 0.06));
-    const moving = smoothstep(MOVE_LO, MOVE_HI, this.eyeV.length());
-    return this.eyeX.clone().addScaledVector(this.eyeV, lead * moving);
+    const moving = smoothstep(MOVE_LO, MOVE_HI, this.eyeV.length()) * smoothstep(NO_LEAD_M, FULL_LEAD_M, this.eyeX.z) * this.conf;
+    const v = this.eyeV.clone();
+    if (v.length() > 1.2) v.setLength(1.2);
+    return this.eyeX.clone().addScaledVector(v, lead * moving);
   }
 
   /** Nouvelle mesure brute de l'œil ? On recale la position (lissage adaptatif, daté à la capture :
@@ -434,9 +453,13 @@ export class PortalMode {
       const pred = old.clone().addScaledVector(this.eyeV, dt * smoothstep(MOVE_LO, MOVE_HI, this.eyeV.length()));
       const r = z.sub(pred);
       // Une mesure très loin de l'attendu (raté du squelette) compte peu, sauf si elle se confirme.
-      this.eyeOdd = r.length() > SUSPECT_M ? this.eyeOdd + 1 : 0;
-      const doubt = this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1;
-      const near = Math.min(1, Math.max(0.3, old.z / NEAR_M));
+      // Seuil plus bas tout près (une tête ne bouge pas de 5 cm en 1/30 s).
+      const suspect = Math.max(0.05, Math.min(SUSPECT_M, 0.12 * old.z));
+      this.eyeOdd = r.length() > suspect ? this.eyeOdd + 1 : 0;
+      // Yeux mal vus par la caméra (visage hors champ, tout près) : la position est devinée par
+      // le squelette, elle ne fait presque plus bouger la vue.
+      const doubt = (this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1) * Math.max(0.04, this.conf);
+      const near = Math.min(1, Math.max(0.12, old.z / NEAR_M));
       const cutoff = (MIN_CUT + SPEED_CUT * this.eyeV.length()) * near;
       const a = (1 - Math.exp(-2 * Math.PI * cutoff * dt)) * doubt;
       this.eyeX.set(pred.x + r.x * a, pred.y + r.y * a, pred.z + r.z * a * Z_GAIN);
@@ -466,11 +489,19 @@ export class PortalMode {
    * qui apparaît d'un coup) sont adoucis.
    */
   private updateFollow(now: number, dt: number): void {
-    this.feedEye();
+    const cue = this.cues();
+    if (cue) {
+      this.conf = smoothstep(0.3, 0.75, cue.eyeVis);
+      this.back += ((cue.facing < 0 ? 1 : 0) - this.back) * (1 - Math.exp(-dt / 0.3));
+    }
+    // De dos : le point de vue ne change plus (la vue reste où elle est).
+    const turned = this.back > 0.6;
+    if (!turned) this.feedEye();
     const fresh = this.eyeOk && Date.now() - this.eyeWall < EYE_STALE_MS;
     const eye = this.eyeNow(dt);
     if (fresh && eye && this.present()) {
       if (now - this.seenAt > LOST_MS) this.presentSince = now;
+      if (!this.locked && now - this.lostAt < RELOCK_MS) this.locked = true;
       this.seenAt = now;
       if (now - this.presentSince > PRESENT_MS) this.locked = true;
       if (eye.distanceTo(this.anchor) > STABLE_RADIUS) {
@@ -479,7 +510,10 @@ export class PortalMode {
       }
       if (now - this.anchorSince > STABLE_MS) this.locked = true;
     }
-    if (now - this.seenAt > LOST_MS) this.locked = false;
+    if (this.locked && now - this.seenAt > LOST_MS && !turned) {
+      this.locked = false;
+      this.lostAt = now;
+    }
     this.follow += ((this.locked ? 1 : 0) - this.follow) * (1 - Math.exp(-dt / 0.8));
     const k = this.follow * this.follow * (3 - 2 * this.follow);
     const target = this.neutralEye();
@@ -490,8 +524,12 @@ export class PortalMode {
     }
     const gap = this.view.distanceTo(target);
     const tau = 0.3 * smoothstep(0.12, 0.45, gap);
-    if (tau < 0.004) this.view.copy(target);
-    else this.view.add(target.sub(this.view).multiplyScalar(1 - Math.exp(-dt / tau)));
+    const step = target.sub(this.view);
+    if (tau >= 0.004) step.multiplyScalar(1 - Math.exp(-dt / tau));
+    // Vitesse plafonnée (angulaire) : jamais de mouvement brusque de la vue.
+    const vmax = Math.max(VIEW_SPEED_MIN, VIEW_SPEED * this.view.z) * dt;
+    if (step.length() > vmax) step.setLength(vmax);
+    this.view.add(step);
   }
 
   frame(now: number): void {

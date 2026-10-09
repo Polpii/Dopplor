@@ -6,6 +6,7 @@ import { MirrorWorld } from "./modes/fairy/world";
 import { Menu3D, type ScreenPose } from "./modes/menu3d";
 import { BubbleMode, type Fingertips } from "./modes/bubbles/bubble-mode";
 import { PortalMode } from "./modes/portal/portal-mode";
+import { STRIDE } from "./vision/protocol";
 import { SignLanguageMode } from "./modes/sign-language";
 import { NeonRenderer } from "./render/neon-renderer";
 import { REFLECTED, Scene } from "./scene";
@@ -212,7 +213,16 @@ async function main(): Promise<void> {
     return out;
   };
   const bubbles = new BubbleMode(world, fingertips);
-  const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null), () => source.eyeSample?.() ?? null);
+  // Indices pour le portail : les yeux sont-ils bien vus (visibilité MediaPipe), la personne
+  // est-elle de face (épaule gauche à droite de la droite dans l'image caméra) ?
+  const bodyCues = () => {
+    const r = [...reflected.bodies].find((b) => b.lostAt === null);
+    if (!r) return null;
+    const c = [...scene.bodies].find((b) => b.lostAt === null);
+    const vis = (i: number) => r.points[i * STRIDE + 3];
+    return { eyeVis: (vis(2) + vis(5)) / 2, facing: c ? c.points[11 * STRIDE] - c.points[12 * STRIDE] : 1 };
+  };
+  const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null), () => source.eyeSample?.() ?? null, bodyCues);
   // Le paysage du portail se calcule à l'avance (quelques centaines de ms), pas à l'ouverture.
   setTimeout(() => portal.prepare(), 5000);
   if (source.setOcclusion) menu.stage = menu3d;
