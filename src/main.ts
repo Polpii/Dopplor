@@ -295,7 +295,7 @@ async function main(): Promise<void> {
     // Carte complète dès que le poing s'allume (menu prêt à s'ouvrir) : elle est déjà là quand
     // les bulles naissent, qui ne passent ainsi jamais devant le corps.
     // Le portail n'a besoin que de l'œil (rien ne le cache) : pas de silhouette à calculer.
-    const needMask = fairy.visible || menu3d.visible || bubbles.visible || fairy.on || bubbles.on || menu.animating;
+    const needMask = fairy.visible || fairy.on || menu3d.visible || menu.animating;
     source.setOcclusion?.(needMask ? 2 : 1);
     world.setVisible(show3d);
     if (show3d) world.render();

@@ -24,7 +24,7 @@ const COUNT = 30;
 const FRONT = 0.5;
 const BACK = 0.7;
 /** Rayon (m) : petites derrière, grosses devant (en plus de la perspective). */
-const R_BACK = 0.03;
+const R_BACK = 0.045;
 const R_FRONT = 0.085;
 /** Dérive (m/s). */
 const DRIFT = 0.06;
@@ -51,10 +51,20 @@ float visible() {
   return 1.0 - cover * behind;
 }`;
 
+/** Distance d'un point (px, py) au segment [a, b]. */
+function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
 /** Bulle bleu néon, bien ronde : bord lumineux, remplissage plus dense vers le bord, reflet. */
 function bubbleMaterial(shared: SharedUniforms): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { ...shared, uSolid: { value: 1 }, uColor: { value: COLOR }, uPop: { value: 0 }, uAppear: { value: 0 } },
+    // Jamais découpées par le corps : le bord du masque se voyait sur les bulles.
+    uniforms: { ...shared, uHasOcc: { value: 0 }, uSolid: { value: 1 }, uColor: { value: COLOR }, uPop: { value: 0 }, uAppear: { value: 0 } },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       void main() {
@@ -169,6 +179,9 @@ export class BubbleMode {
   private nextSpark = 0;
   /** Volume des bulles dans le reflet (fixé à l'entrée dans le mode). */
   private box = new THREE.Box3();
+  private fixedEye = new THREE.Vector3();
+  /** Bouts des doigts à l'image précédente : un geste rapide qui traverse une bulle l'éclate. */
+  private prevTips: [number, number][] = [];
   private rings: { mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>; at: number; r: number }[] = [];
 
   constructor(
@@ -211,11 +224,19 @@ export class BubbleMode {
     this.group.visible = true;
     this.last = now;
     this.needSpawn = true;
+    this.prevTips = [];
+    // Vue fixe : les bulles restent où elles sont à l'écran quand on bouge la tête (elles ne
+    // suivent plus le regard ; elles dérivent seulement, comme de vraies bulles).
+    this.world.viewEye = () => {
+      const [sw, sh] = this.world.screenMeters;
+      return this.fixedEye.set(sw / 2, -sh * 0.3, 2);
+    };
   }
 
   exit(): void {
     this.active = false;
     this.group.visible = false;
+    this.world.viewEye = null;
   }
 
   /** Point de l'écran (px CSS) → 3D à la profondeur `z` (Three), sur le regard de l'œil. */
@@ -324,23 +345,43 @@ export class BubbleMode {
       u.uAppear.value = Math.min(1, g * 2);
       u.uPop.value = 0;
       this.place(b, easeOutBack(g));
-      // Un doigt dessus (dans le reflet) : pop.
-      if (g > 0.5) {
+      // Un doigt dessus (dans le reflet) : pop. Zone de toucher généreuse (au moins ~4 % de la
+      // hauteur de l'écran, même pour une petite bulle), et le trajet du doigt depuis l'image
+      // précédente compte : un geste vif qui la traverse l'éclate aussi.
+      if (g > 0.35) {
         const [cx, cy] = this.world.project(b.pos);
         if (cx < 0 || cx > 1 || cy < 0 || cy > 1) continue;
         const [ex] = this.world.project(b.pos.clone().add(new THREE.Vector3(b.r, 0, 0)));
-        const rPx = Math.abs(ex - cx) * W;
+        const hit = Math.max(Math.abs(ex - cx) * W * 1.2, H * 0.04);
+        const px = cx * W;
+        const py = cy * H;
         for (const [x, y] of tips) {
-          if (Math.hypot(x - cx * W, y - cy * H) < rPx * 0.95) {
+          const from = this.nearestPrev(x, y, H * 0.15) ?? [x, y];
+          if (segmentDistance(px, py, from[0], from[1], x, y) < hit) {
             this.pop(b, now);
             break;
           }
         }
       }
     }
+    this.prevTips = tips.map(([x, y]): [number, number] => [x, y]);
     this.sparks.material.uniforms.uRes.value.copy(this.world.shared.uRes.value);
     this.updateSparks(dt);
     this.updateRings(now);
+  }
+
+  /** Bout de doigt de l'image précédente le plus proche (le même doigt), s'il n'est pas trop loin. */
+  private nearestPrev(x: number, y: number, max: number): [number, number] | null {
+    let best: [number, number] | null = null;
+    let d = max;
+    for (const p of this.prevTips) {
+      const e = Math.hypot(p[0] - x, p[1] - y);
+      if (e < d) {
+        d = e;
+        best = p;
+      }
+    }
+    return best;
   }
 
   /** La bulle en 3D, à sa place dans le reflet. */

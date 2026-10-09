@@ -38,7 +38,7 @@ const PRESENT_MS = 3000;
 /** Mesure de l'œil trop vieille : plus personne. Anticipation du mouvement de la tête (s) : compense
  *  le délai caméra → calcul → image. */
 const EYE_STALE_MS = 700;
-/** Réglages du suivi, ajustables par l'adresse (?EYE_ALPHA=0.6…) pour les essais sur une session
+/** Réglages du suivi, ajustables par l'adresse (?MIN_CUT=1.2…) pour les essais sur une session
  *  rejouée. */
 const tune = (name: string, fallback: number) => {
   const v = Number(new URLSearchParams(location.search).get(name));
@@ -47,8 +47,23 @@ const tune = (name: string, fallback: number) => {
 /** Filtre de l'œil (alpha-bêta) : part de l'écart corrigée à chaque mesure, sur la position et la
  *  vitesse. Délai écran (rendu + affichage, s) ajouté à l'âge de la mesure pour viser l'instant où
  *  l'image sera vue ; anticipation plafonnée. */
-const EYE_ALPHA = tune("EYE_ALPHA", 0.6);
-const EYE_BETA = tune("EYE_BETA", 0.18);
+/** Lissage de la position (filtre adaptatif façon « One Euro ») : coupure (Hz) à l'arrêt, puis
+ *  + SPEED_CUT Hz par m/s de vitesse : très lisse immobile, sans retard en mouvement. Tout près de
+ *  l'écran, le même bruit fait tourner la vue d'un angle bien plus grand : la coupure baisse en
+ *  proportion de la distance (pleine à NEAR_M et au-delà). La distance (z), la plus bruitée et
+ *  celle qui fait zoomer la vue, est lissée plus fort (Z_GAIN) et limitée en vitesse (Z_SPEED). */
+const MIN_CUT = tune("MIN_CUT", 1.0);
+const SPEED_CUT = tune("SPEED_CUT", 10);
+const NEAR_M = tune("NEAR_M", 1.6);
+const Z_GAIN = tune("Z_GAIN", 0.5);
+const Z_SPEED = tune("Z_SPEED", 1.2);
+/** Vitesse (lissage, Hz). L'anticipation ne s'applique qu'en mouvement réel : nulle sous MOVE_LO,
+ *  pleine au-dessus de MOVE_HI (m/s) ; à l'arrêt, la vitesse mesurée n'est que du bruit et la
+ *  prolonger faisait osciller la vue. Œil jamais plus près de la vitre que MIN_EYE_M. */
+const V_CUT = tune("V_CUT", 3);
+const MOVE_LO = tune("MOVE_LO", 0.08);
+const MOVE_HI = tune("MOVE_HI", 0.3);
+const MIN_EYE_M = 0.35;
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
  *  durée (s), puis elle sature en douceur quand les mesures tardent (pas d'arrêt net puis de
@@ -394,18 +409,19 @@ export class PortalMode {
     const age = Math.max(0, (Date.now() - this.eyeWall) / 1000 + DISPLAY_S);
     if (age > EYE_STALE_MS / 1000) return this.eyeX.clone();
     // Tout le retard est anticipé jusqu'à LEAD_CAP_S ; au-delà (mesures en retard), l'anticipation
-    // sature en douceur (pas d'arrêt net, pas d'emballement).
+    // sature en douceur (pas d'arrêt net, pas d'emballement). Seulement en mouvement réel.
     const lead = age <= LEAD_CAP_S ? age : LEAD_CAP_S + 0.06 * (1 - Math.exp(-(age - LEAD_CAP_S) / 0.06));
-    return this.eyeX.clone().addScaledVector(this.eyeV, lead);
+    const moving = smoothstep(MOVE_LO, MOVE_HI, this.eyeV.length());
+    return this.eyeX.clone().addScaledVector(this.eyeV, lead * moving);
   }
 
-  /** Nouvelle mesure brute de l'œil ? On recale position et vitesse (filtre alpha-bêta, daté à la
-   *  capture : les mesures irrégulières ou en retard sont prises à leur vrai instant). Le recalage
-   *  ne fait pas sauter la vue : l'écart est rendu peu à peu (eyeCorr). */
+  /** Nouvelle mesure brute de l'œil ? On recale la position (lissage adaptatif, daté à la capture :
+   *  les mesures irrégulières ou en retard sont prises à leur vrai instant) et la vitesse. Le
+   *  recalage ne fait pas sauter la vue : l'écart est rendu peu à peu (eyeCorr). */
   private feedEye(): void {
     const s = this.sample();
     if (!s || s.wall === this.eyeWall) return;
-    const z = new THREE.Vector3(s.eye[0], -s.eye[1], -s.eye[2]);
+    const z = new THREE.Vector3(s.eye[0], -s.eye[1], Math.max(MIN_EYE_M, -s.eye[2]));
     const dt = (s.wall - this.eyeWall) / 1000;
     const before = this.predictEye();
     if (!this.eyeOk || dt <= 0 || dt > 0.3 || z.distanceTo(this.eyeX) > 0.6) {
@@ -414,12 +430,20 @@ export class PortalMode {
       this.eyeOk = true;
       this.eyeOdd = 0;
     } else {
-      const pred = this.eyeX.clone().addScaledVector(this.eyeV, dt);
+      const old = this.eyeX.clone();
+      const pred = old.clone().addScaledVector(this.eyeV, dt * smoothstep(MOVE_LO, MOVE_HI, this.eyeV.length()));
       const r = z.sub(pred);
+      // Une mesure très loin de l'attendu (raté du squelette) compte peu, sauf si elle se confirme.
       this.eyeOdd = r.length() > SUSPECT_M ? this.eyeOdd + 1 : 0;
-      const doubt = this.eyeOdd > 0 && this.eyeOdd < CONFIRM;
-      this.eyeX.copy(pred).addScaledVector(r, doubt ? 0.15 : EYE_ALPHA);
-      this.eyeV.addScaledVector(r, (doubt ? 0.02 : EYE_BETA) / dt);
+      const doubt = this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1;
+      const near = Math.min(1, Math.max(0.3, old.z / NEAR_M));
+      const cutoff = (MIN_CUT + SPEED_CUT * this.eyeV.length()) * near;
+      const a = (1 - Math.exp(-2 * Math.PI * cutoff * dt)) * doubt;
+      this.eyeX.set(pred.x + r.x * a, pred.y + r.y * a, pred.z + r.z * a * Z_GAIN);
+      const dz = this.eyeX.z - old.z;
+      if (Math.abs(dz) > Z_SPEED * dt) this.eyeX.z = old.z + Math.sign(dz) * Z_SPEED * dt;
+      const v = this.eyeX.clone().sub(old).divideScalar(dt);
+      this.eyeV.lerp(v, 1 - Math.exp(-2 * Math.PI * V_CUT * dt));
       if (this.eyeV.length() > 2.5) this.eyeV.setLength(2.5);
     }
     this.eyeWall = s.wall;
