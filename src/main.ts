@@ -220,12 +220,7 @@ async function main(): Promise<void> {
     if (!r) return null;
     const c = [...scene.bodies].find((b) => b.lostAt === null);
     const vis = (i: number) => r.points[i * STRIDE + 3];
-    return {
-      eyeVis: (vis(2) + vis(5)) / 2,
-      facing: c ? c.points[11 * STRIDE] - c.points[12 * STRIDE] : 1,
-      // Milieu des épaules (repère du miroir, m) : toujours bien vu, même tout près.
-      chest: source.occlusion?.()?.body.chest ?? null,
-    };
+    return { eyeVis: (vis(2) + vis(5)) / 2, facing: c ? c.points[11 * STRIDE] - c.points[12 * STRIDE] : 1 };
   };
   const portal = new PortalMode(world, () => [...reflected.bodies].some((b) => b.lostAt === null), () => source.eyeSample?.() ?? null, bodyCues);
   // Le paysage du portail se calcule à l'avance (quelques centaines de ms), pas à l'ouverture.
