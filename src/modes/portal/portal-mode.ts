@@ -68,10 +68,10 @@ const MOVE_LO = tune("MOVE_LO", 0.08);
 const MOVE_HI = tune("MOVE_HI", 0.3);
 const MIN_EYE_M = 0.35;
 /** Vitesse maximale de la vue sur le côté (m/s par mètre de distance à la vitre, soit une vitesse
- *  angulaire) : ~29°/s tout près de l'écran, où le même déplacement se voit le plus, jusqu'à
- *  ~60°/s au-delà de 1,8 m ; distance (m/s) à part. La vue ne bouge jamais brusquement. */
-const VIEW_SPEED = tune("VIEW_SPEED", 1.3);
-const VIEW_SPEED_FAR = tune("VIEW_SPEED_FAR", 1.3);
+ *  angulaire, ~90°/s) : un garde-fou contre les sauts de mesure, pas un frein aux vrais
+ *  mouvements ; distance (m/s) à part. La vue ne bouge jamais brusquement. */
+const VIEW_SPEED = tune("VIEW_SPEED", 1.6);
+const VIEW_SPEED_FAR = tune("VIEW_SPEED_FAR", 1.6);
 const VIEW_Z_SPEED = tune("VIEW_Z_SPEED", 0.8);
 const VIEW_SPEED_MIN = 0.15;
 /** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
@@ -85,7 +85,7 @@ const NO_LEAD_M = 0.6;
 const VIS_GOOD = tune("VIS_GOOD", 0.85);
 const VIS_MIN = tune("VIS_MIN", 0.5);
 const MID_JUMP_M = tune("MID_JUMP_M", 0.035);
-const NEAR_MIN = tune("NEAR_MIN", 0.45);
+const NEAR_MIN = tune("NEAR_MIN", 0.7);
 const FULL_LEAD_M = 0.9;
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
