@@ -70,15 +70,22 @@ const MIN_EYE_M = 0.35;
 /** Vitesse maximale de la vue sur le côté (m/s par mètre de distance à la vitre, soit une vitesse
  *  angulaire) : ~29°/s tout près de l'écran, où le même déplacement se voit le plus, jusqu'à
  *  ~60°/s au-delà de 1,8 m ; distance (m/s) à part. La vue ne bouge jamais brusquement. */
-const VIEW_SPEED = tune("VIEW_SPEED", 0.5);
-const VIEW_SPEED_FAR = tune("VIEW_SPEED_FAR", 1.05);
+const VIEW_SPEED = tune("VIEW_SPEED", 1.3);
+const VIEW_SPEED_FAR = tune("VIEW_SPEED_FAR", 1.3);
 const VIEW_Z_SPEED = tune("VIEW_Z_SPEED", 0.8);
 const VIEW_SPEED_MIN = 0.15;
 /** Pas d'anticipation tout près (mesure peu fiable, effet amplifié) : nulle sous NO_LEAD_M,
  *  pleine au-delà de FULL_LEAD_M. */
 const NO_LEAD_M = 0.6;
-/** Yeux mal vus : la mesure compte au moins pour cette part (sinon la vue ne bouge plus). */
-const CONF_MIN = tune("CONF_MIN", 0.04);
+/** Visibilité des yeux (MediaPipe) : au-dessus de VIS_GOOD, la mesure est fiable même tout près
+ *  (mesuré : pas de sauts) et suivie pleinement ; entre VIS_MIN et VIS_GOOD, elle compte, mais
+ *  un saut de plus de MID_JUMP_M en une image est rejeté ; sous VIS_MIN (visage hors champ, les
+ *  yeux sont devinés), elle est ignorée : la vue reste où elle est. Le lissage supplémentaire
+ *  tout près ne descend pas sous NEAR_MIN. */
+const VIS_GOOD = tune("VIS_GOOD", 0.85);
+const VIS_MIN = tune("VIS_MIN", 0.5);
+const MID_JUMP_M = tune("MID_JUMP_M", 0.035);
+const NEAR_MIN = tune("NEAR_MIN", 0.45);
 const FULL_LEAD_M = 0.9;
 const DISPLAY_S = tune("DISPLAY_S", 0.025);
 /** Anticipation : tout le retard (prise de vue → image affichée, ~125 ms mesurés) jusqu'à cette
@@ -322,6 +329,7 @@ export class PortalMode {
   private lostAt = -1e9;
   /** Confiance dans la mesure de l'œil (yeux bien vus par la caméra), personne de dos (0–1). */
   private conf = 1;
+  private vis = 1;
   private back = 0;
   private lastFrame = 0;
   private fairies: { fairy: Fairy; seed: number; near: boolean; prev: THREE.Vector3 | null }[] = [];
@@ -444,6 +452,11 @@ export class PortalMode {
   private feedEye(): void {
     const s = this.sample();
     if (!s || s.wall === this.eyeWall) return;
+    if (this.eyeOk && this.vis < VIS_MIN) {
+      // Yeux pas vus (devinés par le squelette) : on garde la position, la vitesse s'éteint.
+      this.eyeV.multiplyScalar(0.7);
+      return;
+    }
     const z = new THREE.Vector3(s.eye[0], -s.eye[1], Math.max(MIN_EYE_M, -s.eye[2]));
     const dt = (s.wall - this.eyeWall) / 1000;
     const before = this.predictEye();
@@ -458,12 +471,12 @@ export class PortalMode {
       const r = z.sub(pred);
       // Une mesure très loin de l'attendu (raté du squelette) compte peu, sauf si elle se confirme.
       // Seuil plus bas tout près (une tête ne bouge pas de 5 cm en 1/30 s).
-      const suspect = Math.max(0.05, Math.min(SUSPECT_M, 0.12 * old.z));
+      const suspect = this.vis >= VIS_GOOD ? Math.max(0.05, Math.min(SUSPECT_M, 0.12 * old.z)) : MID_JUMP_M;
       this.eyeOdd = r.length() > suspect ? this.eyeOdd + 1 : 0;
       // Yeux mal vus par la caméra (visage hors champ, tout près) : la position est devinée par
       // le squelette, elle ne fait presque plus bouger la vue.
-      const doubt = (this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1) * (CONF_MIN + (1 - CONF_MIN) * this.conf);
-      const near = Math.min(1, Math.max(0.12, old.z / NEAR_M));
+      const doubt = this.eyeOdd > 0 && this.eyeOdd < CONFIRM ? 0.25 : 1;
+      const near = Math.min(1, Math.max(NEAR_MIN, old.z / NEAR_M));
       const cutoff = (MIN_CUT + SPEED_CUT * this.eyeV.length()) * near;
       const a = (1 - Math.exp(-2 * Math.PI * cutoff * dt)) * doubt;
       this.eyeX.set(pred.x + r.x * a, pred.y + r.y * a, pred.z + r.z * a * Z_GAIN);
@@ -495,7 +508,8 @@ export class PortalMode {
   private updateFollow(now: number, dt: number): void {
     const cue = this.cues();
     if (cue) {
-      this.conf = smoothstep(0.3, 0.75, cue.eyeVis);
+      this.vis = cue.eyeVis;
+      this.conf = smoothstep(VIS_MIN, VIS_GOOD, cue.eyeVis);
       this.back += ((cue.facing < 0 ? 1 : 0) - this.back) * (1 - Math.exp(-dt / 0.3));
     }
     // De dos : le point de vue ne change plus (la vue reste où elle est).
