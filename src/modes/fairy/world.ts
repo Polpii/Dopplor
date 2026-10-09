@@ -285,6 +285,47 @@ export class MirrorWorld {
     this.updateCamera();
   }
 
+  /**
+   * Part visible (0–1) d'un petit objet lumineux centré en (fx, fy) (écran, 0–1, y vers le bas),
+   * de rayon `radius` (fraction de la hauteur de l'écran), à `zBehind` m derrière la vitre :
+   * moyenne, sur son disque, de « devant le corps ou à côté » (même règle que les shaders). Pour
+   * effacer en entier une fée qui passe derrière quelqu'un, sans contour du corps dans sa lumière.
+   */
+  visibleShare(fx: number, fy: number, zBehind: number, radius: number): number {
+    if (this.shared.uHasOcc.value < 0.5) return 1;
+    const img = this.occTexture.image as { data: Uint8Array; width: number; height: number };
+    const { width: w, height: h, data } = img;
+    if (w < 2 || h < 2) return 1;
+    const z = zBehind - this.shared.uBias.value;
+    const scale = this.shared.uScale.value;
+    const rx = Math.max(1, radius * h * (this.screenMeters[1] / this.screenMeters[0]) * (w / h));
+    const ry = Math.max(1, radius * h);
+    const cx = fx * w;
+    const cy = fy * h;
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
+      for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+        const dx = (x + 0.5 - cx) / rx;
+        const dy = (y + 0.5 - cy) / ry;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 1) continue;
+        const wgt = 1 - d2 * 0.7; // le centre compte plus que le bord du halo
+        let v = 1;
+        if (x >= 0 && x < w && y >= 0 && y < h) {
+          const i = (y * w + x) * 2;
+          const cover = Math.min(1, Math.max(0, (data[i + 1] / 255 - 0.3) / 0.4));
+          const depth = data[i] * scale;
+          const behind = Math.min(1, Math.max(0, (z - depth) / 0.04 + 0.5));
+          v = 1 - cover * behind;
+        }
+        sum += v * wgt;
+        n += wgt;
+      }
+    }
+    return n > 0 ? sum / n : 1;
+  }
+
   /** Œil suivi (lissé), indépendamment du point de vue imposé. */
   get trackedEye(): THREE.Vector3 | null {
     return this.eye;

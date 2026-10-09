@@ -143,6 +143,10 @@ export class FairyMode {
   private angle = 0;
   private last = 0;
   private start = 0;
+  /** Apparition (mode fée, menu) et part non cachée par le corps (lissée) : le fondu de la fée est
+   *  leur produit. Elle n'est plus découpée par le contour du corps : elle s'efface en entier. */
+  private appear = 0;
+  private unhidden = 1;
   private mood: Mood = "wander";
   private moodSince = 0;
   private dart = new THREE.Vector3();
@@ -191,7 +195,7 @@ export class FairyMode {
 
   /** À dessiner : le mode fée, ou son rôle dans le menu. */
   get visible(): boolean {
-    return this.active || this.script !== null || this.fairy.fade.value > 0.001;
+    return this.active || this.script !== null || this.appear > 0.001;
   }
 
   /** Vrai quand elle doit laisser les mains tranquilles (menu ouvert). */
@@ -220,7 +224,8 @@ export class FairyMode {
   }
 
   private setShown(on: boolean): void {
-    this.fairy.fade.value = on ? 1 : 0;
+    this.appear = on ? 1 : 0;
+    this.fairy.fade.value = this.appear;
     for (const o of this.fairy.objects) o.visible = on;
   }
 
@@ -235,6 +240,7 @@ export class FairyMode {
     if (!this.active) {
       this.pos.copy(palm);
       this.vel.set(0, 0.4, 0);
+      this.appear = 0;
       this.fairy.fade.value = 0;
       for (const o of this.fairy.objects) o.visible = true;
     }
@@ -372,9 +378,9 @@ export class FairyMode {
 
     // Apparition / disparition (hors du mode fée).
     const shown = this.active || (this.script !== null && !this.leaving);
-    const f = this.fairy.fade;
-    f.value = Math.min(1, Math.max(0, f.value + (shown ? 1 : -1) * (dt * 1000) / FADE_MS));
-    if (!shown && f.value <= 0) {
+    this.appear = Math.min(1, Math.max(0, this.appear + (shown ? 1 : -1) * (dt * 1000) / FADE_MS));
+    if (!shown && this.appear <= 0) {
+      this.fairy.fade.value = 0;
       this.leaving = false;
       for (const o of this.fairy.objects) o.visible = false;
       return;
@@ -384,7 +390,18 @@ export class FairyMode {
     const s = this.script;
     const landing = this.mood === "approach" && now - this.moodSince > APPROACH_MS * 0.5;
     const onHand = (this.active && (this.mood === "perched" || landing)) || (s?.kind === "hold" && s.onPalm && s.fold <= 0.02);
-    this.fairy.occlusion.value = onHand ? 0 : this.world.shared.uHasOcc.value;
+    // Derrière le corps : elle s'efface en entier, en douceur (part cachée de son disque, à
+    // l'écran), au lieu d'être découpée par le contour du corps (il se voyait dans son halo).
+    this.fairy.occlusion.value = 0;
+    let notHidden = 1;
+    if (!onHand) {
+      const [fx, fy] = this.world.project(this.pos);
+      const [ex] = this.world.project(this.pos.clone().add(new THREE.Vector3(0.06, 0, 0)));
+      const r = Math.max(0.006, (Math.abs(ex - fx) * window.innerWidth) / window.innerHeight);
+      notHidden = this.world.visibleShare(fx, fy, Math.max(0.01, -this.pos.z), r);
+    }
+    this.unhidden += (notHidden - this.unhidden) * (1 - Math.exp(-dt / 0.07));
+    this.fairy.fade.value = this.appear * this.unhidden;
     const direct = this.direct;
     const scriptTarget = this.scripted(now, t, dt);
     if (scriptTarget && direct) {
