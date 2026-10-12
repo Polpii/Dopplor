@@ -155,10 +155,12 @@ export class Menu {
     this.lastHands = hands;
     for (const b of scene.bodies) if (b.lostAt === null) this.personSeenAt = now;
     if (!this.isOpen) {
-      // En pause : rien ne s'arme ; il faudra refaire le geste en entier ensuite.
+      // En pause (la fée posée sur la main) : le geste reste suivi, mais ne déclenche rien. Un
+      // poing fermé pendant la pause compte donc dès qu'elle s'envole (la remettre à zéro à
+      // chaque image obligeait à rouvrir la main avant de pouvoir refaire le geste).
       const paused = this.paused();
-      if (paused) this.bloom.reset();
-      const { triggered, ready: seed } = paused ? { triggered: null, ready: null } : this.bloom.update(hands, now);
+      const gesture = this.bloom.update(hands, now);
+      const { triggered, ready: seed } = paused ? { triggered: null, ready: null } : gesture;
       const ready = now - this.closedAt > 800;
       if (triggered && ready) {
         this.seed.target = 0;

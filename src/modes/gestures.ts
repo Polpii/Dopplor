@@ -136,8 +136,6 @@ const FIST_UP = 0.12; // poing au moins un peu tourné vers le ciel
 // en tolérant de brefs ratés de détection.
 const FIST_HOLD_MS = 150;
 const FIST_GAP_MS = 200;
-/** Après une fermeture du menu, pas de réouverture avant ce délai. */
-const COOLDOWN_MS = 1500;
 // Bras tendu (coude ouvert), la main est vue plus de face : sa paume paraît moins tournée vers
 // le ciel qu'elle ne l'est.
 const OPEN_UP = 0.25; // main ouverte paume vers le ciel (au moins ~15°)
@@ -162,7 +160,6 @@ interface HandMemory {
 export class BloomGesture {
   private hands = new Map<string, HandMemory>();
   private disarmed = new Set<string>();
-  private resetAt = -Infinity;
 
   /** `ready` : un poing paume vers le ciel, prêt à s'ouvrir (pour l'allumer à l'écran). */
   update(hands: HandState[], now: number): { triggered: HandState | null; ready: HandState | null } {
@@ -187,7 +184,7 @@ export class BloomGesture {
         // Poing tenu depuis quand (brefs ratés tolérés) ? Orientation : la meilleure du moment.
         const held = m.fist && now - m.fist.t < FIST_GAP_MS;
         m.fist = { t: now, up: held ? Math.max(up, m.fist!.up * 0.9) : up, y, since: held ? m.fist!.since : now };
-        if (m.armed && m.fist.up >= FIST_UP && now - m.fist.since >= FIST_HOLD_MS && now - this.resetAt > COOLDOWN_MS) ready = hand;
+        if (m.armed && m.fist.up >= FIST_UP && now - m.fist.since >= FIST_HOLD_MS) ready = hand;
         continue;
       }
       if (!m.armed && hand.open) m.armed = true;
@@ -200,7 +197,6 @@ export class BloomGesture {
         raised &&
         now - f.t <= FLICK_MS &&
         f.t - f.since >= FIST_HOLD_MS &&
-        now - this.resetAt > COOLDOWN_MS &&
         f.up >= FIST_UP &&
         up >= OPEN_UP &&
         (y - f.y) / hand.bodyScale <= WRIST_DROP
@@ -218,6 +214,5 @@ export class BloomGesture {
   reset(): void {
     this.disarmed = new Set(this.hands.keys());
     this.hands.clear();
-    this.resetAt = performance.now();
   }
 }

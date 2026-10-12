@@ -167,8 +167,6 @@ export class FairyMode {
   private hopAt = 0;
   private rest = 0;
   private recoverTo = new THREE.Vector3();
-  /** Quand elle a quitté une main pour la dernière fois. */
-  private leftHandAt = -Infinity;
   private hands: Record<Side, HandInfo> = {
     left: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, restY: 0, closed: false },
     right: { flatSince: 0, notFlatSince: 0, ups: [], palm: null, palmAt: 0, speed: 0, vy: 0, restY: 0, closed: false },
@@ -202,11 +200,14 @@ export class FairyMode {
   /** Vrai quand elle doit laisser les mains tranquilles (menu ouvert). */
   busy: () => boolean = () => false;
 
-  /** Elle s'occupe d'une main (la voit, y vient, y est posée, vient d'en partir). */
+  /** Elle est posée sur une main (le menu attend qu'elle s'envole). */
   get holdsHand(): boolean {
     if (!this.active) return false;
-    if (this.mood === "approach" || this.mood === "perched" || this.mood === "fall" || this.mood === "recover") return true;
-    return performance.now() - this.leftHandAt < 800;
+    // Seulement quand elle est posée sur la main (main ouverte à plat : le geste du menu n'est de
+    // toute façon pas possible). Fermer le poing la fait s'envoler : le menu redevient possible
+    // aussitôt (bloquer aussi pendant son approche, sa chute et un délai rendait le menu presque
+    // impossible à ouvrir en mode fée : le geste lui-même l'appelle et la fait tomber).
+    return this.mood === "perched";
   }
 
   enter(now = performance.now()): void {
@@ -656,7 +657,6 @@ export class FairyMode {
   private fall(now: number): THREE.Vector3 {
     this.vel.set(this.vel.x * 0.3, Math.min(0, this.vel.y), this.vel.z * 0.3);
     this.perch = null;
-    this.leftHandAt = now;
     this.setMood("fall", now);
     return this.pos.clone();
   }
@@ -667,14 +667,12 @@ export class FairyMode {
     this.fairy?.sparkle(startled ? 45 : 20, startled ? 2.2 : 1.0);
     this.chime(startled ? [2637, 2093, 1568] : [1760, 2349]);
     this.perch = null;
-    this.leftHandAt = now;
     this.setMood("takeoff", now);
     return this.pos.clone();
   }
 
   private backToOrbit(now: number, head: THREE.Vector3, hips: THREE.Vector3, t: number, dt: number): THREE.Vector3 {
     this.perch = null;
-    this.leftHandAt = now;
     this.setMood("orbit", now);
     return this.orbit(head, hips, now, t, dt);
   }
