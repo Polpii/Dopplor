@@ -370,6 +370,8 @@ class Pipeline:
         self._occ_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="silhouette")
         self._occ_busy = False
         self._eye3: list[float] | None = None
+        #: Silhouettes rejetées (trop petites pour un corps à leur distance), pour le journal.
+        self._rejected = 0
         #: Centre de chaque paume (repère caméra) et quand il a été mesuré.
         self._palms: dict[str, tuple[float, np.ndarray]] = {}
         #: Instants des étapes de l'image en cours (diagnostic du retard), pendant un enregistrement.
@@ -489,22 +491,46 @@ class Pipeline:
     #: fond de la pièce, ou une fausse détection (une chaise de bureau à 4 m, prise pour une
     #: personne avec une confiance de 0,8, faisait danser un squelette quand le miroir était vide).
     MAX_DISTANCE = 3.0
-    #: Sans profondeur : épaules plus petites que ça (px) = trop loin.
-    MIN_SHOULDERS_PX = 35
+    #: Taille du corps à sa distance (m) : largeur d'épaules, hauteur du torse (épaules → hanches).
+    #: Mesuré : de petites silhouettes (5–40 px d'épaules pour 140–155 px de torse : un objet fin
+    #: et vertical du décor, pris pour un corps avec une confiance de 1) apparaissaient et
+    #: disparaissaient en boucle, miroir vide, la profondeur sous elles étant celle du décor
+    #: (< 3 m). Un vrai corps fait au moins ~12 cm de large (de profil, son épaisseur) et ~36 cm de
+    #: torse ; de face à 2 m : 130–150 px d'épaules, 190–225 px de torse.
+    MIN_SHOULDERS_M = 0.12
+    MIN_TORSO_M = 0.36
+    #: Sans profondeur : les mêmes en px (~3,5 m).
+    MIN_SHOULDERS_PX = 45
+    MIN_TORSO_PX = 110
 
     def _near_enough(self, frame: Frame, dets: list[Detection]) -> list[Detection]:
+        """Une vraie personne devant le miroir : pas trop loin, et de la taille d'un corps à sa
+        distance (sinon : un objet du décor pris pour un corps, ou quelqu'un au fond)."""
         if not dets:
             return dets
         p = dets[0].points
         h, w = frame.rgb.shape[:2]
+        px = lambda a, b: float(np.hypot((a[0] - b[0]) * w, (a[1] - b[1]) * h))  # noqa: E731
+        shoulders = px(p[11], p[12])
+        torso = px((p[11] + p[12]) / 2, (p[23] + p[24]) / 2)
         depth = self._depth_of(frame)
+        model = getattr(self.source, "model", None)
         if depth is not None:
             u, v = self.source.to_sensor(p[[11, 12, 23, 24], 0] * w, p[[11, 12, 23, 24], 1] * h)
             z = Mirror._surface_depths(depth, u, v, 6)
             if np.isfinite(z).any():
-                return dets if float(np.nanmedian(z)) <= self.MAX_DISTANCE else []
-        shoulders = float(np.hypot((p[11, 0] - p[12, 0]) * w, (p[11, 1] - p[12, 1]) * h))
-        return dets if shoulders >= self.MIN_SHOULDERS_PX else []
+                d = float(np.nanmedian(z))
+                if d > self.MAX_DISTANCE:
+                    return []
+                fx = float(model.K[0, 0]) if model is not None else 750.0
+                ok = shoulders * d / fx >= self.MIN_SHOULDERS_M and torso * d / fx >= self.MIN_TORSO_M
+                if not ok:
+                    self._rejected += 1
+                return dets if ok else []
+        ok = shoulders >= self.MIN_SHOULDERS_PX and torso >= self.MIN_TORSO_PX
+        if not ok:
+            self._rejected += 1
+        return dets if ok else []
 
     # --- Ne pas sauter d'une personne à l'autre ----------------------------------------------------
 
