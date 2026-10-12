@@ -36,12 +36,16 @@ export class Fairy {
   readonly fade = { value: 1 };
   /** Cachée derrière le corps (1) ou jamais (0 : posée sur une main, la main ne la découpe pas). */
   readonly occlusion = { value: 1 };
+  /** Effacement quand elle passe derrière le corps (voir wipe() dans world.ts). */
+  readonly wipe = { value: new THREE.Vector4(1, 0, 1e4, 1) };
+  readonly wipeCenter = { value: new THREE.Vector2() };
+  readonly wipeOn = { value: 0 };
   private flapPhase = 0;
 
   /** `tint` : couleur de sa lumière (bleutée par défaut). */
   constructor(world: SharedUniforms, tint = new THREE.Color(0.45, 0.8, 1.0)) {
     // Ses matériaux ont leur propre fondu ; le reste (silhouette, écran…) est partagé.
-    const shared: SharedUniforms = { ...world, uFade: this.fade, uHasOcc: this.occlusion };
+    const shared: SharedUniforms = { ...world, uFade: this.fade, uHasOcc: this.occlusion, uWipe: this.wipe, uWipeC: this.wipeCenter, uWipeOn: this.wipeOn };
     const blue = tint;
     const white = new THREE.Color(1, 1, 1);
     const quad = (size: number) => new THREE.PlaneGeometry(size, size);

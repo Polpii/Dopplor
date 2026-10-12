@@ -147,6 +147,7 @@ export class FairyMode {
    *  leur produit. Elle n'est plus découpée par le contour du corps : elle s'efface en entier. */
   private appear = 0;
   private unhidden = 1;
+  private hiddenDir = new THREE.Vector2(1, 0);
   private mood: Mood = "wander";
   private moodSince = 0;
   private dart = new THREE.Vector3();
@@ -390,18 +391,31 @@ export class FairyMode {
     const s = this.script;
     const landing = this.mood === "approach" && now - this.moodSince > APPROACH_MS * 0.5;
     const onHand = (this.active && (this.mood === "perched" || landing)) || (s?.kind === "hold" && s.onPalm && s.fold <= 0.02);
-    // Derrière le corps : elle s'efface en entier, en douceur (part cachée de son disque, à
-    // l'écran), au lieu d'être découpée par le contour du corps (il se voyait dans son halo).
+    // Derrière le corps : pas de découpe par le contour du corps (il se voyait dans son halo). Un
+    // bord droit et doux avance du côté par où elle passe derrière (elle entre par la droite :
+    // sa gauche disparaît d'abord), en proportion de la part cachée de son disque à l'écran.
     this.fairy.occlusion.value = 0;
     let notHidden = 1;
+    const [fx, fy] = this.world.project(this.pos);
+    const [ex] = this.world.project(this.pos.clone().add(new THREE.Vector3(0.06, 0, 0)));
+    const res = this.world.shared.uRes.value;
+    const rFrac = Math.max(0.006, (Math.abs(ex - fx) * window.innerWidth) / window.innerHeight);
     if (!onHand) {
-      const [fx, fy] = this.world.project(this.pos);
-      const [ex] = this.world.project(this.pos.clone().add(new THREE.Vector3(0.06, 0, 0)));
-      const r = Math.max(0.006, (Math.abs(ex - fx) * window.innerWidth) / window.innerHeight);
-      notHidden = this.world.visibleShare(fx, fy, Math.max(0.01, -this.pos.z), r);
+      const part = this.world.hiddenPart(fx, fy, Math.max(0.01, -this.pos.z), rFrac);
+      notHidden = part.visible;
+      if (part.dir[0] !== 0 || part.dir[1] !== 0) {
+        this.hiddenDir.lerp(new THREE.Vector2(part.dir[0], part.dir[1]), 1 - Math.exp(-dt / 0.06)).normalize();
+      }
     }
-    this.unhidden += (notHidden - this.unhidden) * (1 - Math.exp(-dt / 0.07));
-    this.fairy.fade.value = this.appear * this.unhidden;
+    this.unhidden += (notHidden - this.unhidden) * (1 - Math.exp(-dt / 0.05));
+    // Bord : à +R (rien de caché) … −R (tout caché), R = rayon de son halo à l'écran (px).
+    const R = Math.max(4, rFrac * res.y * 2.2);
+    const soft = R * 0.35;
+    const hidden = 1 - this.unhidden;
+    this.fairy.wipe.value.set(this.hiddenDir.x, this.hiddenDir.y, (R + soft) * (1 - 2 * hidden), soft);
+    this.fairy.wipeCenter.value.set(fx * res.x, fy * res.y);
+    this.fairy.wipeOn.value = hidden > 0.003 ? 1 : 0;
+    this.fairy.fade.value = this.appear;
     const direct = this.direct;
     const scriptTarget = this.scripted(now, t, dt);
     if (scriptTarget && direct) {

@@ -35,6 +35,18 @@ uniform float uBias;
 // bizarre). 0 : chaque fragment selon sa propre distance (étincelles).
 uniform float uSolid;
 uniform float uFade;
+// Effacement de la fée quand elle passe derrière le corps (sans le contour du corps) : un bord
+// droit et doux qui avance du côté caché. uWipe : direction du côté caché (écran, y vers le bas),
+// position du bord et douceur (px, depuis son centre uWipeC) ; uWipeOn : actif.
+uniform vec4 uWipe;
+uniform vec2 uWipeC;
+uniform float uWipeOn;
+float wipe() {
+  if (uWipeOn < 0.5) return 1.0;
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) - uWipeC;
+  float d = dot(p, uWipe.xy);
+  return 1.0 - smoothstep(uWipe.z - uWipe.w, uWipe.z + uWipe.w, d);
+}
 // r : distance du reflet du corps (× uScale), g : couverture par le corps (bord doux).
 float visibleAt(vec2 uv, float zBehind) {
   vec2 o = texture2D(uOcc, uv).rg;
@@ -51,7 +63,7 @@ float visibleAt(vec2 uv, float zBehind) {
 // uBias : la fée compte comme un peu plus près qu'elle n'est (posée sur une main, sa lumière
 // ne doit pas être cachée par cette main).
 float visibleBehind(float zBehind) {
-  if (uHasOcc < 0.5) return uFade;
+  if (uHasOcc < 0.5) return uFade * wipe();
   zBehind -= uBias;
   vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
   return uFade * visibleAt(uv, zBehind);
@@ -292,10 +304,16 @@ export class MirrorWorld {
    * effacer en entier une fée qui passe derrière quelqu'un, sans contour du corps dans sa lumière.
    */
   visibleShare(fx: number, fy: number, zBehind: number, radius: number): number {
-    if (this.shared.uHasOcc.value < 0.5) return 1;
+    return this.hiddenPart(fx, fy, zBehind, radius).visible;
+  }
+
+  /** Comme visibleShare, avec la direction (écran, y vers le bas) du côté caché du disque. */
+  hiddenPart(fx: number, fy: number, zBehind: number, radius: number): { visible: number; dir: [number, number] } {
+    const none = { visible: 1, dir: [0, 0] as [number, number] };
+    if (this.shared.uHasOcc.value < 0.5) return none;
     const img = this.occTexture.image as { data: Uint8Array; width: number; height: number };
     const { width: w, height: h, data } = img;
-    if (w < 2 || h < 2) return 1;
+    if (w < 2 || h < 2) return none;
     const z = zBehind - this.shared.uBias.value;
     const scale = this.shared.uScale.value;
     const rx = Math.max(1, radius * h * (this.screenMeters[1] / this.screenMeters[0]) * (w / h));
@@ -304,6 +322,8 @@ export class MirrorWorld {
     const cy = fy * h;
     let sum = 0;
     let n = 0;
+    let hx = 0;
+    let hy = 0;
     for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
       for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
         const dx = (x + 0.5 - cx) / rx;
@@ -321,9 +341,12 @@ export class MirrorWorld {
         }
         sum += v * wgt;
         n += wgt;
+        hx += (1 - v) * wgt * dx;
+        hy += (1 - v) * wgt * dy;
       }
     }
-    return n > 0 ? sum / n : 1;
+    const l = Math.hypot(hx, hy);
+    return { visible: n > 0 ? sum / n : 1, dir: l > 1e-6 ? [hx / l, hy / l] : [0, 0] };
   }
 
   /** Œil suivi (lissé), indépendamment du point de vue imposé. */
